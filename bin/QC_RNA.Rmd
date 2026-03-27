@@ -1,0 +1,88 @@
+---
+title: "QC_RNA"
+author: "Cenna Doornbos"
+output: html_document
+params:
+  mrna_deseq_data_tab: Z:/data/iPSC_data/iPSC_RNAseq/Data_integration/mrna_dseq_filtered.csv
+  metadata: ~/ipsc-data-analysis/20240514_Xomics iPSC Neurons_new_READ-ONLY.xlsx
+---
+
+## Additional QC analysis for RNA data
+
+#### Script parameters
+```{r, params}
+print(Sys.Date())
+print(params)
+```
+### Libraries
+```{r, libraries}
+library(readxl)
+library(tidyverse)
+library(ggrepel)
+library(plotly)
+```
+
+### read data
+```{r, read data}
+# read in data
+data_frame_rna <- read.csv(params$mrna_deseq_data_tab) %>%
+  mutate(sample_name = gsub("\\.", "-", X), #stratify names
+         sample_name = gsub("X409", "409", sample_name), #stratify names
+         sample_name = gsub("CDH2", "CHD2", sample_name), #correct CHD2 mislabeling
+         .before = X) %>%
+  select(-X)
+
+# read in metadata
+
+metadata_rna <- read_excel(params$metadata, sheet = "Assay - transcriptomics") %>%
+  left_join(read_excel(params$metadata, sheet = "Sample - Induced pluripoten "), by = "sample identifier", suffix = c("_rna", "_sam")) %>%
+  left_join(read_excel(params$metadata, sheet = "ObservationUnit"), by = "observation unit identifier", suffix = c("", "_OU")) %>%
+  mutate("sample_name" = gsub("_Transcriptomics", "", `assay identifier`), .after = "assay identifier")
+```
+
+
+```{r}
+metadata_rna <- metadata_rna[metadata_rna$`technical replicate` != 2,]
+metadata_rna$sample_name <- gsub("_1", "", metadata_rna$sample_name)
+```
+
+
+
+```{r, sex match}
+#ensemble labels xist (female) and uty (male)
+# xist <- "ENSG00000229807"
+# uty <- "ENSG00000183878"
+# sry <- "ENSG00000184895"
+#TODO: Add more Y chromosome genes
+
+# adapt data to generate figure
+df <- data_frame_rna %>%
+  select(sample_name, ENSG00000229807,
+                      ENSG00000184895,
+                      ENSG00000183878) %>%
+  rename("XIST" = ENSG00000229807,
+         "SRY" = ENSG00000184895,
+         "UTY" = ENSG00000183878) %>%
+  # mutate("measured sex" = if_else(UTY > 0.5, "male", "female")) %>%
+  mutate("measured sex" = case_when(UTY <= 0.1 ~ "female",
+                                    UTY > 1.5 ~ "male",
+                                    .default = "NA")) %>%
+  left_join(metadata_rna, by = "sample_name") %>%
+  dplyr::rename("sex" = gender) %>%
+  mutate("label" = ifelse(`measured sex` != sex, sample_name, ""))
+
+  
+#generate sex match figure
+p <- ggplot(df, aes(XIST, UTY, colour = sex, label = label, text = sample_name, shape = `measured sex`)) +
+  #geom_point(size = 4, alpha = 0.4, stroke = NA) +
+  geom_jitter(size = 4, alpha = 0.4, stroke = NA) +
+  labs(title = "RNA determined sex") +
+  theme_minimal()
+
+#save figure with labels
+ggsave("Z:/data/iPSC_data/Results/QC/RNA determined sex.pdf",
+       plot = p + geom_text_repel(max.overlaps = 100, force = 50), width = 7, height = 7)
+
+#display figure
+ggplotly(p, tooltip = c("text", "colour", "shape", "UTY", "XIST"))
+```

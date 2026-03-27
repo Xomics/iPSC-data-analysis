@@ -1,0 +1,62 @@
+---
+title: "Methrix"
+output: html_document
+params:
+    methrix_dir: Z:/data/iPSC_data/EMseq_NewData/h5_raw/
+---
+
+```{r}
+library(methrix)
+```
+
+
+```{r}
+print(params)
+```
+
+
+## Read in Methrix object from shared disk
+```{r}
+meth <- methrix::load_HDF5_methrix(params$methrix_dir)
+```
+
+
+## Create Methrix report
+```{r}
+#methrix::methrix_report(meth=meth_object, output_dir = 'Z:/data/iPSC_data/Results/Methrix/')
+```
+
+
+## Remove uncovered loci
+
+```{r}
+meth <- methrix::remove_uncovered(m = meth)
+#to remove the sex chromosomes, if you want. 
+meth <- methrix::subset_methrix(meth, contigs = paste0("chr", 1:22))
+```
+
+## QC filtering 
+```{r}
+# this sets the values to missing for sites with low and too high coverage 
+
+meth <- methrix::mask_methrix(m = meth, low_count = 5)
+#this filters the sites which are not covered in s certain percentage of your study population - i.e. remove sites with are not covered in more than 20% or your samples
+meth <- methrix::coverage_filter(m=meth, cov_thr = 1, prop_samples = 0.2)
+```
+
+## Filter CpG overlappings with SNP
+
+```{r}
+#while this can't hurt, these are cell lines, so don't have SNP variations. 
+library(MafDb.1Kgenomes.phase3.GRCh38)
+library(GenomicScores)
+meth <- methrix::remove_snps(m = meth)
+```
+
+```{r}
+dir.create('Z:/data/iPSC_data/EMseq_NewData/Methrix/')
+save_HDF5_methrix(meth, 'Z:/data/iPSC_data/EMseq_NewData/Methrix/h5_QC_SNP_filtered/', replace=T)
+```
+
+
+

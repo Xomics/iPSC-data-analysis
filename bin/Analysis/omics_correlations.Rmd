@@ -1,0 +1,87 @@
+---
+title: "Pairwise correlations of omics measurements"
+output: html_document
+params:
+  isa_file: C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240822_Xomics_iPSC_Neurons_new_READ-ONLY.xlsx
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  outdir: Z:/data/iPSC_data/results/RLM/
+---
+
+## Params
+The `MultiAssayExperiment` [@Ramos2017] contains preprocessed data and has been created with the *R* notebook `examples\create_MultiAssayExperiment.Rmd`.
+
+```{r read_multiassayexperiment}
+print(params)
+outdir <- params$outdir
+```
+
+
+## Read data and metadata: MultiAssayExperiment
+
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+experiments(mae)
+```
+
+## RNAseq and Proteomics data
+```{r}
+get_data <- function(name_assay) {
+  se <- mae[[name_assay]]
+  df_wide <- data.frame(t(assay(se)))
+  return(df_wide)
+}
+
+get_feature_metadata <- function(name_assay) {
+  se <- mae[[name_assay]]
+  df_wide <- as.data.frame(rowData(se))
+  return(df_wide)
+}
+
+RNAseq <- get_data('RNAseq | Deseq')
+Proteomics <- get_data('Proteomics')
+
+RNAseq_features <- get_feature_metadata('RNAseq | Deseq')
+Proteomics_features <- get_feature_metadata('Proteomics')
+```
+
+
+## Intersection based on gene ids
+```{r}
+common_genes <- intersect(RNAseq_features$Gene_symbol, Proteomics_features$gene_id)
+
+RNAseq_features_common <- RNAseq_features[RNAseq_features$Gene_symbol %in% common_genes,]
+Proteomics_features_common <- Proteomics_features[Proteomics_features$gene_id %in% common_genes,]
+
+RNAseq_common <- RNAseq[,colnames(RNAseq) %in% rownames(RNAseq_features_common)]
+Proteomics_common <- Proteomics[,colnames(Proteomics) %in% rownames(Proteomics_features_common)]
+
+## Put in same order
+colnames(RNAseq_common) <- RNAseq_features_common$Gene_symbol 
+colnames(Proteomics_common) <- Proteomics_features_common$gene_id 
+
+Proteomics_common_sorted <- Proteomics_common[ match(colnames(RNAseq_common), colnames(Proteomics_common))]
+
+## Same set of samples
+Proteomics_common_sorted <- Proteomics_common_sorted[rownames(RNAseq_common),]
+```
+
+## Pairwise correlations of shared genes
+```{r}
+correlations <- sapply(names(RNAseq_common), function(col) cor(RNAseq_common[[col]], Proteomics_common_sorted[[col]]))
+mean(correlations)
+```
+
+
+```{r}
+library(ggplot2)
+
+ggplot(data.frame(cor = correlations), aes(x = cor)) +
+   geom_histogram(binwidth = 0.05, fill = "skyblue1", color = "black")
+```
+

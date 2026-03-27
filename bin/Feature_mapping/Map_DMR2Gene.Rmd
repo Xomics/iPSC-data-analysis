@@ -1,0 +1,82 @@
+---
+title: "Annotate_DMRs"
+output: html_document
+date: '2025-01-30'
+---
+
+```{r}
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+```
+
+## Read DMR files
+```{r}
+DMRS_clone1 <- read.csv('C:/Users/Z896216/Documents/DMRS_DM1_c1.csv', row.names = 1)
+DMRS_clone3 <- read.csv('C:/Users/Z896216/Documents/DMRS_DM1_c3.csv', row.names=1)
+DMRS <- read.csv('C:/Users/Z896216/Documents/DMRS_DM1_c2.csv', row.names = 1)
+
+```
+
+
+## Get CpG positions in GRanges object
+```{r}
+
+map_DMRS2genes <- function(dmrs) {
+  # GRanges object
+  dmr_gr <- GRanges(
+  seqnames = dmrs$chr,
+  ranges = IRanges(start = dmrs$start, end = dmrs$end),
+  areaStat = dmrs$areaStat,
+  nCG = dmrs$nCG
+  )
+  
+  # Gene annotations
+  txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+  genes_gr <- genes(txdb)
+  
+  # Find nearest genes
+  nearest_genes_idx <- nearest(dmr_gr, genes_gr)
+  nearest_genes <- genes_gr[nearest_genes_idx]
+
+  # Combien into dataframe
+  dmr_with_genes <- cbind(
+  as.data.frame(dmr_gr),
+  gene_id = nearest_genes$gene_id,
+  gene_chr = as.character(seqnames(nearest_genes)),
+  gene_start = start(nearest_genes),
+  gene_end = end(nearest_genes),
+  gene_strand = as.character(strand(nearest_genes))
+  )
+  return(dmr_with_genes)
+
+}
+
+DMRS_nearest_genes <- map_DMRS2genes(DMRS)
+DMRS_c1_nearest_genes <- map_DMRS2genes(DMRS_clone1)
+DMRS_c3_nearest_genes <- map_DMRS2genes(DMRS_clone3)
+```
+
+# Map to gene symbols
+```{r}
+entrez2symbols <- function(entrez_list) {
+  gene_symbols <- mapIds(
+    org.Hs.eg.db,
+    keys = as.character(entrez_list),
+    column = "SYMBOL",
+    keytype = "ENTREZID",
+    multiVals = "first"
+  )
+  return(gene_symbols)
+} 
+
+DMRS_nearest_genes$GeneSymbol <- entrez2symbols(DMRS_nearest_genes$gene_id)
+DMRS_c1_nearest_genes$GeneSymbol <- entrez2symbols(DMRS_c1_nearest_genes$gene_id)
+DMRS_c3_nearest_genes$GeneSymbol <- entrez2symbols(DMRS_c3_nearest_genes$gene_id)
+```
+
+
+
+
+

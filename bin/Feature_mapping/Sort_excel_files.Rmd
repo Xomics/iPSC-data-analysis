@@ -1,0 +1,55 @@
+---
+title: "Sort_Excel_files"
+output: html_document
+date: '2025-02-03'
+---
+
+
+```{r}
+library(readxl)    # For reading Excel files
+library(writexl)   # For writing Excel files
+library(dplyr)     # For data manipulation
+```
+
+
+## Corrected or Uncorrected data
+```{r}
+#input_dir <- 'Z:/data/iPSC_data/Results/MixedModels'
+input_dir <- 'Z:/data/iPSC_data/Results/MixedModels_CORRECTED/'
+```
+
+
+## Read mixed models results
+```{r}
+split_string <- "_MixedModel"
+
+xlsx_files <- list.files(input_dir, pattern = "\\.xlsx$", full.names=T)
+```
+
+
+```{r}
+sort_sheet <- function(input_file) {
+  sheets <- excel_sheets(input_file)
+
+  # Read, sort, and store sheets in a list
+  sorted_sheets <- lapply(sheets, function(sheet) {
+    df <- read_excel(input_file, sheet = sheet)  # Read sheet
+    if ("t.value" %in% colnames(df)) {           # Check if column exists
+      df <- df %>% arrange(p.value)              # Sort by t.value
+    }
+    return(df)  # Return sorted dataframe
+  })
+  names(sorted_sheets) <- sheets
+  return(sorted_sheets)
+}
+```
+
+```{r}
+sorted_sheets <- lapply(xlsx_files, function(file) {
+  sorted_excel <- sort_sheet(file)
+  write_xlsx(sorted_excel, file)
+})
+  
+```
+
+

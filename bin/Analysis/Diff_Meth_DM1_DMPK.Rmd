@@ -1,0 +1,95 @@
+---
+title: "DMR_clones"
+output: html_document
+date: "2025-06-16"
+params:
+  methrix_qc_dir: Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_QC_SNP_filtered/
+  isa_path: C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240822_Xomics_iPSC_Neurons_new_READ-ONLY.xlsx
+  outdir: Z:/data/iPSC_data/Results/DM1/
+---
+
+
+## Libaries
+```{r}
+library(DSS)
+```
+
+```{r}
+print(params)
+```
+
+```{r}
+outdir <- params$outdir
+
+if (!dir.exists(outdir)){
+  outdir <- getwd()
+}
+```
+
+## Complete set of QC Methrix object
+```{r}
+meth_object <- methrix::load_HDF5_methrix(params$methrix_qc_dir)
+```
+
+
+## Subset DM1 P2 P3 and control samples
+```{r}
+all_samples <- meth_object@colData@rownames
+DM1_CTRL_samples <- all_samples[!grepl('CHD2', all_samples) &  !grepl('NANS', all_samples)]
+
+### !! Remove Repeat excised sample !! ###
+DM1_CTRL_samples <- DM1_CTRL_samples[!grepl(pattern = 'rep', DM1_CTRL_samples)]
+### !! Remove P1 samples !! ###
+DM1_CTRL_samples <- DM1_CTRL_samples[!grepl(pattern = 'p1', DM1_CTRL_samples)]
+
+subset_meth <- meth_object[, DM1_CTRL_samples ]
+```
+
+
+## bs object
+```{r}
+bs_obj <- methrix::methrix2bsseq(subset_meth)
+bs_obj
+```
+
+
+## DM1 Design matrix (clones, CRISPR line with clone 1)
+```{r}
+DiseasControls <- ifelse(grepl('DM1', DM1_CTRL_samples), "Patient", "Control")
+
+design <- data.frame(DiseaseControl = DiseasControls)
+```
+
+## DM patients vs controls
+```{r}
+bs_obj <- bs_obj[seqnames(bs_obj) == "chr19", ]
+dmr_fit <- DMLfit.multiFactor(BSobj = bs_obj, design = design, formula = ~ DiseaseControl)
+```
+
+## DML 
+```{r}
+dml_test <- DMLtest.multiFactor(dmr_fit, coef = 2 )
+```
+
+## Differentially metylated regions (DMRs)
+```{r}
+dmrs_sign <- DSS::callDMR(dml_test, p.threshold = 0.001)
+```
+
+# DMPK region
+```{r}
+start <- 45764750
+end <- 45784750
+
+dmrs_sign_chr19 <- dmrs_sign[dmrs_sign$chr == 'chr19',]
+dmrs_sign_chr19_DMPK_20kb <- dmrs_sign_chr19[dmrs_sign_chr19$start >= start & dmrs_sign_chr19$end <= end,] 
+```
+
+```{r}
+write.csv(dmrs_sign, file.path(outdir, 'DMRS_DM1_PatientsControls.csv'))
+```
+
+
+
+
+

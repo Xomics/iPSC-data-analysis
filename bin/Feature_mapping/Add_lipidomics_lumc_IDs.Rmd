@@ -1,0 +1,127 @@
+---
+title: "Add_feature_IDs"
+output: html_document
+date: "2025-01-29"
+---
+
+## Corrected or Uncorrected data
+```{r}
+input_dir <- 'Z:/data/iPSC_data/Results/MixedModels'
+#input_dir <- 'Z:/data/iPSC_data/Results/MixedModels_CORRECTED/'
+```
+
+```{r}
+library(openxlsx)
+library(dplyr)
+```
+
+## Assay name
+```{r}
+sheet_name <- "Lipidomics, Untargeted"
+```
+
+
+## Read mixed models results
+
+```{r}
+split_string <- "_MixedModel"
+
+xlsx_files <- list.files(input_dir, pattern = "\\.xlsx$", full.names=T)
+
+data_list <- list()
+
+for (file in xlsx_files) {
+  data_list[[file]] <- openxlsx::read.xlsx(file, sheet = sheet_name)
+}
+```
+
+
+## Read feature metadata table
+```{r}
+lipidomics_IDs_pos <- read.delim('Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/New information requested/Untargeted met+lip/20231123_134746_lipidomics_pos.txt', sep = '\t')
+colnames(lipidomics_IDs_pos) <- lipidomics_IDs_pos[4,]
+lipidomics_IDs_pos <- lipidomics_IDs_pos[c(5:nrow(lipidomics_IDs_pos)), c(1:33)]
+lipidomics_IDs_pos$`Alignment ID` <- paste0('pos_', lipidomics_IDs_pos$`Alignment ID`)
+
+lipidomics_IDs_neg <- read.delim('Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/New information requested/Untargeted met+lip/20231123_135559_lipidomics_neg.txt', sep = '\t')
+colnames(lipidomics_IDs_neg) <- lipidomics_IDs_neg[4,]
+lipidomics_IDs_neg <- lipidomics_IDs_neg[c(5:nrow(lipidomics_IDs_neg)), c(1:33)]
+lipidomics_IDs_neg$`Alignment ID` <- paste0('neg_', lipidomics_IDs_neg$`Alignment ID`)
+```
+
+
+## Add retention time and mass
+```{r}
+lipidomics <- data_list[[1]]
+
+# Get retention times
+features_RT <- lapply(lipidomics$feature, function(x) {
+    if (grepl('pos', x)) {
+      rt <- lipidomics_IDs_pos[lipidomics_IDs_pos$`Alignment ID` == x, "Average Rt(min)"]
+    }
+    else if (grepl('neg', x)) {
+      rt <- lipidomics_IDs_neg[lipidomics_IDs_neg$`Alignment ID` == x, "Average Rt(min)"]
+    }
+    rt
+})
+
+## Get feature masses
+features_Mass <- lapply(lipidomics$feature, function(x) {
+    if (grepl('pos', x)) {
+      rt <- lipidomics_IDs_pos[lipidomics_IDs_pos$`Alignment ID` == x, "Average Mz"]
+    }
+    else if (grepl('neg', x)) {
+      rt <- lipidomics_IDs_neg[lipidomics_IDs_neg$`Alignment ID` == x, "Average Mz"]
+    }
+    rt
+})
+
+## Get Metabolite names if there
+metabolite_names <- lapply(lipidomics$feature, function(x) {
+    if (grepl('pos', x)) {
+      metabolite_name <- lipidomics_IDs_pos[lipidomics_IDs_pos$`Alignment ID` == x, 'Metabolite name']
+    }
+    else if (grepl('neg', x)) {
+      metabolite_name <- lipidomics_IDs_neg[lipidomics_IDs_neg$`Alignment ID` == x, 'Metabolite name']
+    }
+    metabolite_name
+})
+
+df_ids <- data.frame(Feature_Mass = as.character(features_Mass), 
+                     Feature_RT = as.character(features_RT), 
+                     Lipid_name = as.character(metabolite_names))
+
+## Mapping table
+lipidomics_mapping_table <- cbind(lipidomics, df_ids)
+```
+
+
+## Add feature metadata to Mixed Model results
+```{r}
+updated_list <- lapply(data_list, function(df) {
+  df <- df %>%
+    left_join(lipidomics_mapping_table %>% select(all_of(c("feature",
+                                                           "Feature_Mass",
+                                                           "Feature_RT",
+                                                           "Lipid_name"))),
+              by = "feature")
+  return(df)
+})
+```
+
+
+## Save to the Excel file
+```{r}
+lapply(names(updated_list), function(name_df) {
+  df <- updated_list[[name_df]]
+  wb <- loadWorkbook(name_df)
+  writeData(wb, sheet = sheet_name, x = df, withFilter = F)
+  saveWorkbook(wb, name_df, overwrite = T)
+})
+```
+
+
+
+
+
+

@@ -1,0 +1,104 @@
+---
+title: "Methrix"
+output: html_document
+params:
+    methrix_dir: Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_raw/
+    methrix_qc_dir: Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_QC_SNP_filtered/
+    outdir: Z:/data/iPSC_data/results/DMPK_Methylation/
+    mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+---
+
+```{r}
+library(methrix)
+```
+
+
+```{r}
+print(params)
+```
+
+
+## Read in Methrix object from shared disk
+```{r}
+meth <- methrix::load_HDF5_methrix(params$methrix_dir)
+```
+
+
+## Select ISA file to get correct sample IDs
+```{r}
+isa_assay_prot <- readxl::read_xlsx('C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240822_Xomics_iPSC_Neurons_new_READ-ONLY.xlsx', sheet = 'Assay - proteomics')
+```
+
+```{r}
+library(MultiAssayExperiment)
+library(HDF5Array)
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+
+phenotype_data <- as.data.frame(colData(mae))
+```
+
+
+## Select TMEM132 region
+```{r}
+meth_subset <- methrix::subset_methrix(m = meth, regions = data.table(chr='chr7', start = 153886300, end =153887000))
+```
+
+
+## Combine with pheno df
+```{r}
+source('support_functions/ReadMethrix2Df.R')
+df_list <- read_meth2df(meth_subset, isa_assay_prot)
+df <- data.frame(t(df_list[[1]]))
+
+phenotype_data <- phenotype_data[rownames(df),]
+
+df$Phenotype <- phenotype_data$phenotype
+df$Sample <- phenotype_data$observation.unit.identifier.crispr
+df$Clone <- phenotype_data$sample.description
+```
+
+
+## Only keep DM1 P2 clones 
+```{r}
+df <- df[df$Sample == 'DM_2',]
+df <- df[rownames(df) != 'NA',]
+```
+
+
+## Plot methylation in the DMPK region
+```{r, fig.width=15, fig.height=4}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+
+df_long <- df %>%
+  pivot_longer(
+    cols = starts_with("chr7_"),
+    names_to = "Genome_Location",
+    values_to = "Measurement"
+  ) %>%
+  mutate(Genome_Location = as.numeric(gsub("chr7_", "", Genome_Location)))
+
+df_avg_Sample <- df_long %>%
+  group_by(Clone, Genome_Location) %>%
+  summarize(Avr_Beta =  mean(Measurement), .groups= "drop")
+```
+
+
+```{r}
+source('support_functions/plot_DMR.R')
+```
+
+
+## DPP6
+```{r, fig.width=17, fig.height=4}
+ggp <- plot_DMR(df_avg_Sample, 153886334, 153886996, 'DPP6') 
+ggsave('Z:/data/iPSC_data/Results/DMR/Clones_DPP6.pdf', ggp, width=16, height =4)
+```
+
+
+

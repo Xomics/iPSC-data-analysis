@@ -1,0 +1,199 @@
+---
+title: "Add_feature_IDs"
+output: html_document
+date: "2025-01-29"
+params: 
+  metabolomics_pos: Z:/data/iPSC_data/iPSC_metabolomics_TML/Processed_untargeted_metabolomics_data/231120_UDA/231120_Patient_plasma_BB23-00001_1-IPS22-00063_2_2024-03-13_ESIpos.tsv
+  metabolomics_neg: Z:/data/iPSC_data/iPSC_metabolomics_TML/Processed_untargeted_metabolomics_data/231128_UDA/231128_Patient_plasma_BB23-00001_1-IPS22-00063_2_2024-03-13_ESIneg.tsv
+  outdir: Z:/data/iPSC_data/Results/MixedModels/Metabolomics_anno
+---
+
+## Corrected or Uncorrected data
+```{r}
+input_dir <- 'Z:/data/iPSC_data/Results/MixedModels'
+#input_dir <- 'Z:/data/iPSC_data/Results/MixedModels_CORRECTED/'
+```
+
+## Params
+```{r}
+print(params)
+```
+
+
+```{r}
+library(openxlsx)
+library(dplyr)
+library(tidyverse)
+```
+
+
+## Set Assay to metabolomics data
+```{r}
+assay_name <- 'Metabolomics, TML'
+```
+
+
+## Read mixed models results
+```{r}
+split_string <- "_MixedModel"
+
+xlsx_files <- list.files(input_dir, pattern = "\\.xlsx$", full.names=T)
+
+data_list <- list()
+
+for (file in xlsx_files) {
+  data_list[[file]] <- openxlsx::read.xlsx(file, sheet = assay_name)
+}
+```
+
+
+Feature metadata
+```{r}
+metabolomics_IDs_pos <- read.delim(params$metabolomics_pos, sep = '\t')
+metabolomics_IDs_pos$Feature_ID <- paste0('TML_pos', metabolomics_IDs_pos$Feature_ID)
+
+metabolomics_IDs_neg <- read.delim(params$metabolomics_neg, sep = '\t')
+metabolomics_IDs_neg$Feature_ID <- paste0('TML_neg', metabolomics_IDs_neg$Feature_ID)
+```
+
+
+## Add retention time and mass
+```{r}
+# Use first df as mapping table
+metabolomics <- data_list[[1]]
+
+features_RT <- lapply(metabolomics$feature, function(x) {
+    if (grepl('_pos', x)) {
+      rt <- metabolomics_IDs_pos[metabolomics_IDs_pos$Feature_ID == x, 'Feature_RT']
+    }
+    else if (grepl('_neg', x)) {
+      rt <- metabolomics_IDs_neg[metabolomics_IDs_neg$Feature_ID == x, 'Feature_RT']
+    }
+    unique(rt)
+})
+
+features_Mass <- lapply(metabolomics$feature, function(x) {
+    if (grepl('_pos', x)) {
+      rt <- metabolomics_IDs_pos[metabolomics_IDs_pos$Feature_ID == x, 'Feature_Mass']
+    }
+    else if (grepl('_neg', x)) {
+      rt <- metabolomics_IDs_neg[metabolomics_IDs_neg$Feature_ID == x, 'Feature_Mass']
+    }
+    unique(rt)
+})
+
+df_ids <- data.frame(Feature_Mass = as.character(features_Mass), 
+                     Feature_RT = as.character(features_RT))
+```
+
+
+## Find HMDB ids per feature 
+```{r}
+hmdb_mappings <- lapply(metabolomics$feature, function(x) {
+    if (grepl('_pos', x)) {
+      HMDB_ids <- metabolomics_IDs_pos[metabolomics_IDs_pos$Feature_ID == x, 'HMP']
+    }
+    else if (grepl('_neg', x)) {
+      HMDB_ids <- metabolomics_IDs_neg[metabolomics_IDs_neg$Feature_ID == x, 'HMP']
+    }
+    HMDB_ids
+})
+```
+
+
+## Add to new dataframe, add this to MixedModel results table
+```{r}
+df <- tibble(original = hmdb_mappings) %>%
+  mutate(row_id = row_number()) %>%
+  unnest_wider(original, names_sep ="_")%>%
+  select(-row_id)
+colnames(df) <- paste0("Put_annotation", seq_along(df))
+```
+
+
+## Create mapping table of feature metadata
+```{r}
+df_ids_temp1 <- cbind(df_ids, df)
+## Mapping table
+mapping_table <- cbind(metabolomics, df_ids_temp1)
+
+#dir.create(params$outdir)
+write.csv(mapping_table, file.path(params$outdir, 'HMDBMetabolomicsMappings.csv'))
+```
+
+
+## Filter HDMBs putative annoation for metabolic panel
+```{r}
+hmdb_mappings_MP <- lapply(metabolomics$feature, function(x) {
+    if (grepl('_pos', x)) {
+      HMDB_ids <- metabolomics_IDs_pos[metabolomics_IDs_pos$Feature_ID == x & metabolomics_IDs_pos$MP == 'YES', 'HMP']
+    }
+    else if (grepl('_neg', x)) {
+      HMDB_ids <- metabolomics_IDs_neg[metabolomics_IDs_neg$Feature_ID == x & metabolomics_IDs_neg$MP == 'YES', 'HMP']
+    }
+    HMDB_ids
+})
+
+
+df_panel <- tibble(original = hmdb_mappings_MP) %>%
+  mutate(row_id = row_number()) %>%
+  unnest_wider(original, names_sep ="_")%>%
+  select(-row_id)
+colnames(df_panel) <- paste0("Put_annotation", seq_along(df_panel))
+
+
+mapping_table$Feature_Mass.1 <- NULL
+df_ids <- cbind(df_ids, df_panel)
+df_ids$Feature_Mass <- NULL
+df_ids$Feature_RT <- NULL
+##Create mapping table
+mapping_table_panel <- cbind(metabolomics, df_ids)
+
+
+mapping_table_panel$Feature_Mass <- mapping_table$Feature_Mass
+mapping_table_panel$Feature_RT <- mapping_table$Feature_RT
+
+write.csv(mapping_table_panel , file.path(params$outdir, 'HMDBMetabolomicsMappings_PANEL.csv'))
+```
+
+
+## Add feature metadata (only panel annotations) to Mixed Model results
+```{r}
+updated_list <- lapply(data_list, function(df) {
+  df <- df %>%
+    left_join(mapping_table_panel %>% select(all_of(c("feature",
+                                                           "Feature_Mass",
+                                                           "Feature_RT")),
+                                                    starts_with("Put_annotation")),
+              by = "feature")
+  return(df)
+})
+```
+
+
+
+## Save to the Excel file
+```{r}
+lapply(names(updated_list), function(name_df) {
+  df <- updated_list[[name_df]]
+  wb <- loadWorkbook(name_df)
+  writeData(wb, sheet = assay_name, x = df, withFilter = F)
+  saveWorkbook(wb, name_df, overwrite = T)
+})
+```
+
+
+## Save HMDB ids and more in separate table
+```{r}
+# hmdb_extra_table <- rbind(metabolomics_IDs_pos, metabolomics_IDs_neg)
+# hmdb_extra_table <- hmdb_extra_table[hmdb_extra_table$Feature_ID %in% metabolomics$feature,]
+# hmdb_extra_table <- hmdb_extra_table[ , c('HMP', 'Formula', 'Adduct', 'Isotope')]
+# write.csv(hmdb_extra_table, 'Z:/data/iPSC_data/Results/MixedModels/Metabolomics_HMDB_annotations.csv')
+```
+
+
+
+
+
+
+

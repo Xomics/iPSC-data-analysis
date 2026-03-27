@@ -1,0 +1,230 @@
+---
+title: "Features_overview"
+author:
+- Casper de Visser^[Radboud university medical center, Casper.deVisser@radboudumc.nl]
+output:
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  outdir: Z:/data/iPSC_data/results/PCA/
+  config_file: 'config.yml'
+---
+
+
+## Params
+The `MultiAssayExperiment` [@Ramos2017] contains preprocessed data and has been created with the *R* notebook `examples\create_MultiAssayExperiment.Rmd`.
+
+```{r read_multiassayexperiment}
+print(params)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!dir.exists(outdir)){
+    outdir <- getwd()
+}
+```
+
+## Libraries
+```{r}
+library(gridExtra)
+library(ggplot2)
+library(dplyr)
+suppressMessages(library(MultiAssayExperiment))
+suppressMessages(library(HDF5Array))
+```
+
+
+## Read input data 
+
+Input data is a MultiAssayExperiment (MAE) object. 
+```{r}
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+mae
+```
+
+
+## Functions used to retrieve data from MAE
+```{r}
+# Function to read omics data from MAE into dataframe
+read_omics_from_mae <- function(mae_object, name_assay){
+  se <- mae_object[[name_assay]]
+  df_wide <- data.frame(t(assay(se)))
+  df_wide <- df_wide[ , colSums(is.na(df_wide))==0]
+  df_wide
+  
+}
+```
+
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+## Assay selection
+```{r}
+experiment_names <- config$experiment_names$general_selection
+experiment_names
+```
+
+
+## Make list of assays
+```{r}
+assay_list <- lapply(experiment_names, function(assay_name) {
+  df_wide <- read_omics_from_mae(mae, assay_name)
+  }) 
+names(assay_list) <- experiment_names
+```
+
+
+## Make phenotype dataframe
+```{r}
+pheno_df <- as.data.frame(colData(mae))
+
+## Add column to compare only disease vs. healthy
+disease_healthy_col <- lapply(pheno_df$phenotype, function(x) {
+    
+    if (startsWith(x, 'Healthy')) {
+        x <- x
+    }
+    else if (startsWith(x, 'Diseased')) {
+        x <- 'Diseased'
+    }
+    else if (startsWith(x, 'Rescue')) {
+        x <- 'Healthy'
+    }
+    x
+})
+pheno_df$Disease <- as.character(disease_healthy_col)
+```
+
+
+## Functions used for plotting the CVs
+```{r, fig.width = 20}
+
+## Function that calculates the Coefficient of Variation (%)
+cv <- function(x) {
+  if (mean(x) != 0) {
+    sd(x) / mean(x) * 100
+  } else {
+    NA
+  }
+}
+
+
+# Function to make density plot without sample groups
+density_plot_CV <- function(item) {
+  
+  # -omics data
+  input_df <- assay_list[[item]]
+  
+  # add minimum value to all values + 1, preventing negative values
+  input_df <- input_df + (abs(min(input_df)) + 1)
+  
+  # Calculate Coefficients of Variance
+  CV_list <- sapply(input_df, cv)
+  CVs_df <- data.frame(CV_list)
+  colnames(CVs_df) <- c('CV')
+  
+  p <- ggplot(CVs_df, aes(x=CV)) +
+    geom_density(color = 'darkblue', fill='lightblue') +
+    ggtitle(paste0(item))+
+    theme_grey(base_size=22)
+  return(p)
+}
+
+
+## Function to sort phenotype column according to -omics df order
+sort_pheno_group_col <- function(df_pheno, df_omics, pheno_col) {
+  
+  pheno_values <- lapply(rownames(df_omics), function(x){
+    value <- df_pheno[x, pheno_col]
+  })
+  pheno_values <- as.character(pheno_values)
+  return(pheno_values)
+}
+
+
+## Function to calculate CV per group
+compute_cv_by_category <- function(df){
+    df %>%
+        group_by(Group) %>%
+        summarise(across(where(is.numeric), cv))
+}
+
+
+# Function to plot CVs per phenotype group
+density_plot_CV_groups <- function(assay_name, df_pheno, pheno_col) {
+  
+  # Get -omics data frame
+  input_df <- assay_list[[assay_name]]
+  
+  # add minimum value to all values + 1, preventing negative values
+  input_df <- input_df + (abs(min(input_df)) + 1)
+  
+  # Add column for pheno group
+  pheno_group_col <- sort_pheno_group_col(df_pheno, input_df, pheno_col)
+  input_df$Group <- pheno_group_col
+  
+  # Calculate CV
+  df_grouped <- compute_cv_by_category(input_df)
+  df_melted <- reshape2::melt(df_grouped)
+  
+  # Number of features
+  n_features <- ncol(df_grouped)
+  
+  p <- ggplot(df_melted, aes(x=value, fill=Group)) +
+     geom_density(color = 'darkblue', alpha=0.4) +
+     ggtitle(paste0(assay_name, '\n Number of features: ', n_features)) +
+    theme_grey(base_size=22)
+  return(p)
+}
+```
+
+
+## Plot CVs without groups
+```{r, fig.width=20}
+lapply(experiment_names, density_plot_CV)
+```
+
+
+## Plot CVs per phenotype group
+```{r, fig.width=20}
+lapply(experiment_names, function(x) density_plot_CV_groups(x, pheno_df, 'phenotype') )
+```
+
+
+## Plot CVs for males/females
+```{r, fig.width=20}
+plot_list <- lapply(experiment_names, function(x) density_plot_CV_groups(x, pheno_df, 'sex') )
+plot_list
+```
+
+## Plot CVs comparing diseased and healthy groups
+```{r, fig.width=20}
+plot_list_pheno <- lapply(experiment_names, function(x) density_plot_CV_groups(x, pheno_df, 'Disease') )
+plot_list_pheno
+```
+
+
+## Grid arrange all plots together into PDF
+```{r}
+n <- length(plot_list)
+nrow <- ceiling(n /2)
+pdf("arranged_CVplot_Sex.pdf", width = 20, height = 3 * nrow)
+do.call(grid.arrange, c(plot_list, ncol = 2, padding=unit(20, "cm")))
+dev.off()
+```
+
+
+```{r}
+n <- length(plot_list_pheno)
+nrow <- ceiling(n /2)
+pdf("arranged_CVplot_Pheno.pdf", width = 20, height = 3 * nrow)
+do.call(grid.arrange, c(plot_list_pheno, ncol = 2, padding=unit(20, "cm")))
+dev.off()
+```

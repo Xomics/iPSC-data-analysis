@@ -1,0 +1,180 @@
+---
+title: "Molecular Markers"
+output: html_document
+date: "2024-11-15"
+params:
+  outdir: Z:/data/iPSC_data/results/DM1
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  config_file: 'config.yml'
+---
+
+# Visualize results of linear modelling
+
+## Parameters
+```{r}
+print(params)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!dir.exists(outdir)){
+    outdir <- getwd()
+}
+```
+
+
+## Read data and metadata: MultiAssayExperiment
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+```
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+## Assay selection
+```{r}
+assay_names <- config$experiment_names$general_selection
+assay_names
+```
+
+
+## Phenotypic data
+```{r}
+pheno_df <- as.data.frame(colData(mae))
+```
+
+
+```{r}
+library(patchwork)
+library(pheatmap)
+library(ggplot2)
+library(ggrepel)
+library(ggokabeito) # Okabe-Ito
+library(ggpubr)
+library(ggcorrplot)
+```
+
+
+## Functions for plotting features per disease group
+```{r}
+source_paths <- c(
+  "../support_functions/Feature_plots.R",      # when running in Rstudio
+  "Feature_plots.R"          # when running in Nextflow
+)
+
+for (path in source_paths) {
+  if (file.exists(path)) {
+    source(path)
+    break
+  }
+}
+```
+
+
+### DM1
+#### RNA levels
+```{r}
+assay_name <- assay_names[grepl('RNAseq', assay_names)]
+
+rna_plot_df <- prepare_boxplot_df(assay_name)
+
+boxplot_per_group(rna_plot_df, 'ENSG00000149187', assay_name, 'CELF1', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+boxplot_per_group(rna_plot_df, 'ENSG00000048740', assay_name, 'CELF2', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+boxplot_per_group(rna_plot_df, 'ENSG00000159409', assay_name, 'CELF3', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+boxplot_per_group(rna_plot_df, 'ENSG00000161082', assay_name, 'CELF5', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+```
+
+#### Protein levels
+```{r}
+assay_name <- assay_names[grepl('Prot', assay_names)]
+
+protein_plot_df <- prepare_boxplot_df(assay_name)
+
+boxplot_per_group(protein_plot_df, 'Q92879', assay_name, 'CELF1', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+boxplot_per_group(protein_plot_df, 'O95319', assay_name, 'CELF2', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+boxplot_per_group(protein_plot_df, 'Q5SZQ8', assay_name, 'CELF3', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+
+```
+
+### DMPK expression
+```{r}
+assay_name <- assay_names[grepl('RNAseq', assay_names)]
+
+rna_plot_df <- prepare_boxplot_df(assay_name)
+
+df_input_dm <- rna_plot_df[rna_plot_df$phenotype %in% c('Diseased: DM1',
+                                                  'Rescue: repeat excised CRISPR DM1',
+                                                  'Healthy'),]
+
+
+## Combine CTRLs
+df_input_dm$sample.description <- ifelse(grepl("Control", df_input_dm$sample.description), "CTRL", df_input_dm$sample.description)
+df_input_dm$sample.description <- ifelse(grepl("repeat excised", df_input_dm$sample.description), "CTRL", df_input_dm$sample.description)
+
+
+## Re-factor to correct order
+df_input_dm$sample.description <- factor(df_input_dm$sample.description, levels = c("CTRL", 
+                                                                                    "DM1 patient 1 clone 1",
+                                                                                    "DM1 patient 2 clone 1",
+                                                                                    "DM1 patient 2 clone 2",
+                                                                                    "DM1 patient 2 clone 3",
+                                                                                    "DM1 patient 3 clone 1"))
+## Contrasts to check                                                         
+comparisons <- list(c("CTRL", "DM1 patient 1 clone 1"),
+                    c("CTRL", "DM1 patient 2 clone 1"),
+                    c("CTRL", "DM1 patient 2 clone 2"),
+                    c("CTRL", "DM1 patient 2 clone 3"),
+                    c("CTRL", "DM1 patient 3 clone 1"))
+
+
+ggp <- boxplot_per_group(df_input_dm, 'ENSG00000104936', 'RNA-seq', 'DMPK (ENSG00000104936)', 'Log2-scaled intensity', 
+                         phenotype = 'sample.description',
+                         comparisons=comparisons)
+ggp
+ggsave(file.path(outdir, "RNA_DMPK_DM1_Sign.pdf"), ggp, height = 5)
+```
+
+
+### SIX5 expression
+```{r}
+ggp <- boxplot_per_group(df_input_dm, 'ENSG00000177045', 'RNA-seq', 'SIX5 (ENSG00000177045)', 'Log2-scaled intensity', 
+                         phenotype = 'sample.description',
+                         comparisons=comparisons)
+ggp
+ggsave(file.path(outdir, "RNA_SIX5_DM1_Sign.pdf"), ggp, height = 5)
+```
+
+
+## DMPK hypermethylation
+```{r}
+assay_name <- assay_names[grepl('EMseq', assay_names)]
+df_input <- prepare_boxplot_df(assay_name)
+DMPK_features <- c('chr19_45770966', 'chr19_45770745')
+
+df_input_dm <- df_input[df_input$phenotype %in% c('Diseased: DM1',
+                                                  'Rescue: repeat excised CRISPR DM1',
+                                                  'Healthy'),]
+
+lapply(DMPK_features, function(x) {
+  ggp <- boxplot_per_group(df_input_dm, x, assay_name, 'DM1',  y_lab = 'beta-value', phenotype = 'observation.unit.identifier.crispr')
+  ggsave(paste0('Meth_', x, '.pdf'), ggp, heigh = 5, width = 8)
+})
+
+```
+
+
+
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

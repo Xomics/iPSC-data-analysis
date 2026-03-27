@@ -1,0 +1,152 @@
+---
+title: "Lipidomics Untargeted 2 Tabular"
+output: html_document
+params:
+  lipidomics_data: Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Lipidomics_results_unfiltered.xlsx
+  isa_files: Z:/data/iPSC_data/Xomics iPSC Neurons_new.xlsx
+  lumc_samples: Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Samples_match_ISA.xlsx
+  sample_matching: "Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Sample list.xlsx"
+ 
+  outdir: Z:/data/iPSC_data/iPSC_MAE
+---
+
+## Read processed lipidomics (untargeted) data and save to tabular formats for the MultiAssayExperiment object
+
+#### Script parameters
+```{r}
+print(Sys.Date())
+print(params)
+```
+
+
+### Libraries
+```{r}
+library(openxlsx)
+library(dplyr)
+```
+
+
+
+### Feature metadata
+```{r}
+## feature metadata
+feature_metadata <- openxlsx::read.xlsx(params$lipidomics_data, rowNames = TRUE,  sheet = 'Feature metadata')
+head(feature_metadata)
+```
+
+### Sample metadata #TODO
+```{r}
+# sample_metadata <- lipidomics[1:3,4:44]
+# sample_metadata <- data.frame(t(sample_metadata))
+# head(sample_metadata)
+# dim(sample_metadata)
+```
+
+
+### Measurement data
+```{r}
+lipidomics_data <- openxlsx::read.xlsx(params$lipidomics_data, rowNames = TRUE,  sheet = 'Total area normalized')
+lipidomics_data <- data.frame(t(lipidomics_data))
+lipidomics_data[] <- lapply(lipidomics_data, as.numeric)
+head(lipidomics_data[, 1:5])
+```
+
+### Visualize missingness in data
+```{r}
+source("support_functions/heatmap_missingness.R")
+lipidomics_data_heatmap <- lipidomics_data
+lipidomics_data_heatmap[lipidomics_data_heatmap==0] <- NA
+heatmap_missing(lipidomics_data, 'Lipidomics Untargeted (LUMC)')
+```
+
+
+
+## Sample metadata (ISA file)
+```{r}
+# library(readxl)
+# isa_sample <- read.xlsx("C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240514_Xomics iPSC Neurons_new_READ-ONLY.xlsx", sheet = 'Assay - lipidomics_UT')
+```
+
+## Add column for sample names as written in ISA file using the LUMC Sample Sheet
+```{r}
+lumc_samples <- read.xlsx(params$lumc_samples)
+
+lumc_sheet_order <- lapply(rownames(lipidomics_data), function(x) {
+  num <- strsplit(x, "_")[[1]][[3]]
+  num
+  
+})
+lipidomics_data$sampleOrder <- as.numeric(as.character(lumc_sheet_order))
+lipidomics_data <- lipidomics_data[order(lipidomics_data$sampleOrder, decreasing=F),]
+lipidomics_data$sampleOrder <- NULL
+```
+
+
+## Sample metadata in same order
+```{r}
+#sample_metadata <- sample_metadata[rownames(lipidomics_data),]
+```
+
+
+## Remove last digit code in sample namings to match ISA files
+```{r}
+final_sample_names <- lapply(rownames(lipidomics_data), function(x) {
+  end_char <- nchar(x) - 4
+  x <- substr(x, 1, end_char)
+  x
+})
+## Add to measurement data and sample metadata
+rownames(lipidomics_data) <- as.character(final_sample_names)
+#rownames(sample_metadata) <- as.character(final_sample_names)
+```
+
+
+## Replace zero's by half of minimum
+```{r}
+lipidomics_data_noZero <- lipidomics_data %>% mutate(across(everything(), ~if_else(. == 0, min(.[. != 0])/2, .)))
+```
+
+
+## Log transformation
+```{r}
+epsilon <- 0.01 * min(lipidomics_data_noZero[lipidomics_data_noZero> 0], na.rm = T)
+#lipidomics_data_Log10 <- log10(lipidomics_data_noZero + epsilon)
+lipidomics_data_Log <- log2(lipidomics_data_noZero + epsilon)
+```
+
+
+## Plot distributions
+```{r}
+source("support_functions/PlotDistributions2.R")
+
+PlotDistributions(lipidomics_data, type = 'hist', main_title = 'Lipidomics untargeted' )
+PlotDistributions(lipidomics_data_noZero, type = 'hist', main_title = 'Zero values replaced by half of minimum' )
+PlotDistributions(lipidomics_data_Log, type = 'hist', main_title = 'Log-transformed' )
+PlotDistributions(lipidomics_data_Log10, type = 'hist', main_title = 'Log-transformed' )
+```
+
+
+## Ensure feature metadata has same features
+```{r}
+
+feature_metadata <- feature_metadata[colnames(lipidomics_data_Log),]
+feature_metadata <- na.omit(feature_metadata)
+
+lipidomics_data_Log <- lipidomics_data_Log [, rownames(feature_metadata)]
+```
+
+
+## Save data and metadata to .CSV files
+```{r}
+write.csv(lipidomics_data_Log, file =  file.path(params$outdir, 'lipidomics_UT_data.csv'))
+
+#write.csv(sample_metadata, file =  file.path(params$outdir, 'lipidomics_UT_sample_metadata.csv'))
+write.csv(feature_metadata, file =  file.path(params$outdir, 'lipidomics_UT_feature_metadata.csv'))
+```
+
+
+```{r}
+sessionInfo()   
+```
+
+

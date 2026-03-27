@@ -1,0 +1,142 @@
+---
+title: "CNV_WES2Tabular"
+output: html_document
+params:
+  cnv_wes_ed_data: Z:/data/iPSC_data/iPSC_CNV-WES/CNV_processed/
+  cnv_wes_conifer_data: Z:/data/iPSC_data/iPSC_CNV-WES/DNA24-01729_calls.conifer.txt
+
+---
+
+## Read processed CNV-WES data and save to tabular formats for the MultiAssayExperiment object
+
+#### Script parameters
+```{r}
+print(Sys.Date())
+print(params)
+```
+
+### Function
+```{r}
+read_ed_file <- function(dir) {
+  
+  # ED file
+  ed_files <- dir(dir, pattern = "ED.txt")
+  ed_file <- ed_files[[1]]
+  
+  # Extract sample name from file name
+  sample_name <- gsub(params$cnv_wes_ed_data, "", dir)
+  sample_name <- gsub("_Genomics", "", sample_name) ##TODO
+  
+  file <- read.delim(file.path(dir, ed_file))
+  
+  file$sample_name <- rep(sample_name, nrow(file))
+  return(file)
+}
+
+```
+
+### Read all ED files
+```{r}
+parent.folder <- params$cnv_wes_ed_data
+sub.folders <- list.dirs(parent.folder, recursive = TRUE)[-1]
+
+data_frame_ed <-  read_ed_file(sub.folders[[1]])
+
+for (sub in sub.folders[2:16]) {
+  temp <- read_ed_file(sub)
+  data_frame_ed <- rbind(data_frame_ed, temp)
+}
+
+write.csv(data_frame_ed, 'Z:/data/iPSC_data/iPSC_CNV-WES/Data_integration/cnv_ed.csv', row.names = FALSE)
+```
+
+## Number of CNV calls per sample
+```{r}
+table(data_frame_ed$sample_name)
+```
+
+### Retrieve unique features and sample names
+```{r}
+unique_features <- unique(data_frame_ed$id)
+samples <- unique(data_frame_ed$sample_name)
+```
+
+### Combine data into classical sample/feature data frame
+```{r}
+library(plyr)
+
+df_per_sample_list <-lapply(samples, function(sample) {
+  df_temp <- data_frame_ed[ data_frame_ed$sample_name == sample,] 
+  df_temp <- df_temp[, c( 'id', 'reads.ratio')]
+  rownames(df_temp) <- df_temp$id
+  df_temp$id <- NULL
+  df_temp <- data.frame(t(df_temp))
+})
+names(df_per_sample_list) <- samples
+
+df_combined <- plyr::rbind.fill(df_per_sample_list)
+rownames(df_combined) <- samples
+
+df_combined[,1:5]
+```
+
+
+### Visualize missingness in data
+```{r}
+source("support_functions/heatmap_missingness.R")
+heatmap_missing(df_combined, 'CNV-WES')
+```
+
+### CNV calls present in most samples
+```{r}
+s <- sort(apply(is.na(df_combined), 1, sum))
+df_combined_ordered <- df_combined[,order(colSums(is.na(df_combined)))]
+df_combined_ordered[, 1:10]
+```
+
+
+
+
+## Principal Component analysis
+```{r  fig.width=14}
+
+# df_pca_input <- data.frame(t(df_combined_ordered[, 1:100])) 
+# performPCA(df_pca_input, "X409B", "WTC") 
+
+# TODO: Modify imputation method for this plot, or in separate function
+```
+
+```{r}
+source("support_functions/performPCA.R")
+## Manual PCA code (impute with 1)
+
+data_table <- data.frame(t(df_combined_ordered[, 1:100])) 
+start_col_name <-  "X409B"
+end_col_name <- "WTC"
+
+start = as.numeric(which(colnames(data_table) == start_col_name))
+end = as.numeric(which(colnames(data_table) == end_col_name))
+  
+data_table_sub <- data_table[,start:end]
+  
+#transpose matrix
+data_table_sub <- t(data_table_sub)
+# Convert NA to 0
+data_table_sub[is.na(data_table_sub)] <- 1
+  
+# Add a new column to indicate sample categories
+# The categories have been extracted from the rownames, as the first word before row names
+# NANS_p3c1_Proteomics_2_S2_A11_1 is NANS
+sampleType <- sub("^(.*?)_.*","\\1", rownames(data_table_sub))
+colnames(data_table_sub)[ncol(data_table_sub)] <- "sampleType"
+  
+data.pca <- prcomp(data_table_sub, center = TRUE, scale.= TRUE)
+g <- ggbiplot(
+    data.pca,
+    groups = sampleType,
+    var.axes = F,
+    labels = rownames(data_table_sub)
+  )
+ggsave("Z:/data/iPSC_data/Results/QC/WES_PCA.pdf",
+       plot = g, width = 7, height = 7)
+```

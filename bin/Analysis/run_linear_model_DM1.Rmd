@@ -1,0 +1,159 @@
+---
+title: 'Linear models'
+author:
+  - Casper de Visser^[Radboud university medical center, Casper.deVisser@radboudumc.nl]
+output:
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  mrna_read_data: Z:/data/iPSC_data/iPSC_RNAseq/iPSC_RTC/RawCounts/
+  outdir: Z:/data/iPSC_data/results/RLM/
+  config_file: "config.yml"
+---
+
+## Params
+The `MultiAssayExperiment` [@Ramos2017] contains preprocessed data and has been created with the *R* notebook `examples\create_MultiAssayExperiment.Rmd`.
+
+```{r read_multiassayexperiment}
+print(params)
+outdir <- params$outdir
+```
+
+## Read data and metadata: MultiAssayExperiment
+
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+mae
+```
+
+The MultiAssayExperiment contains individual omics assays
+
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+## Assay selection
+```{r}
+experiment_names <- config$experiment_names$general_selection
+experiment_names
+```
+
+Phenotype information shared across all assays can be accessed via `colData()`
+
+```{r sample_information_overview}
+names(colData(mae))
+
+pheno_df <- as.data.frame(colData(mae))
+```
+
+## Read .txt files
+```{r}
+setwd(params$mrna_read_data)
+txt_files <- list.files( pattern = "\\counts.txt$")
+counts_tables <- lapply(txt_files, function(x) {
+ df <- read.table(x, sep = '\t', header = F, stringsAsFactors = F)
+ colnames(df) <- c("Key", "Value")
+ 
+ named_vec <- setNames(df$Value, df$Key)
+})
+
+mrna_read_data <- as.data.frame(do.call(rbind, counts_tables))
+rownames(mrna_read_data) <- sub("\\.counts.txt$", "", txt_files)
+```
+
+## Selec DM1 patient 1 lines
+```{r}
+dm1_lines <- c('DM1-p1c1-RNA-1', 'DM1-p1c1-RNA-2',
+               'DM1-p2c1rep-RNA-1', 'DM1-p2c1rep-RNA-2')
+mrna_read_data <- mrna_read_data[dm1_lines, ]
+
+new_names <- c('IPS20_00036_1', 'IPS20_00036_2',
+               'IPS23_00090_1', 'IPS23_00090_2')
+rownames(mrna_read_data) <- new_names
+mrna_read_data <- data.frame(t(mrna_read_data))
+
+pheno_df <- pheno_df[new_names,]
+pheno_df$phenotype <- as.factor(pheno_df$phenotype)
+```
+
+
+## Create DESeqdata
+```{r}
+library(DESeq2)
+dds <- DESeqDataSetFromMatrix(countData = mrna_read_data,
+                              colData = pheno_df,
+                              design = ~ phenotype)
+
+# Filter low count reads
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+```
+
+## Run DEseq
+```{r}
+dds <- DESeq(dds)
+```
+
+## Results
+```{r}
+res <- results(dds, name ="phenotype_Rescue..repeat.excised.CRISPR.DM1_vs_Diseased..DM1")
+summary(res)
+```
+## Top DE genes
+```{r}
+res_ordered <- as.data.frame(res[order(res$padj),])
+res_ordered[1:20,]
+```
+
+## Number of significants
+```{r}
+nrow(res_ordered[res_ordered$padj < 0.05,])
+```
+
+## Volcano plot
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+resLFC <- lfcShrink(dds, coef = "phenotype_Rescue..repeat.excised.CRISPR.DM1_vs_Diseased..DM1", type= 'normal')
+
+resLFC_df <- as.data.frame(resLFC)
+
+resLFC_df$threshold <- as.factor(ifelse(resLFC_df$padj < 0.05 & abs(resLFC_df$log2FoldChange) > 1,
+                                        "Significant", "Not Significant"))
+
+
+## Map to gene symbols
+rna_mapping <- read.csv('Z:/users/devissercasper/RNA_seq_RTC_maping_table.csv', sep = ';')
+
+resLFC_df$symbols <- rna_mapping$Gene_symbol[match(rownames(resLFC_df), rna_mapping$feature)]
+resLFC_df$gene <- rownames(resLFC_df)
+top_genes <- resLFC_df$symbols[order(resLFC_df$padj)][1:20]
+
+ggplot(resLFC_df, aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(color = threshold), alpha = 0.8, size = 1.5) +
+  geom_text_repel(data = resLFC_df[resLFC_df$symbols %in% top_genes,],
+                  aes(label = symbols), size = 3, max.overlaps = 10) +
+  scale_color_manual(values = c("grey", "red")) +
+  xlab("Log2 Fold Change") +
+  ylab("-Log10 adjusted p-value") +
+  theme_bw()
+```
+
+
+## Session information
+```{r}
+sessionInfo()
+```
+
+

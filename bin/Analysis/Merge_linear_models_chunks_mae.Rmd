@@ -1,0 +1,31 @@
+---
+title: "Merge_linear_models_results_chunks_mae"
+output: html_document
+date: "2026-03-10"
+params:
+  merged_chunks: 'Z:/data/iPSC_data/Results'
+  merged_mae_results: 'Z:/data/iPSC_data/Results'
+---
+
+```{r}
+print(params)
+```
+
+Read merged chunks and adjust p.value
+```{r}
+merged_chunks <- read.csv(params$merged_chunks)
+merged_chunks$X <- NULL
+merged_chunks$p.adj <- p.adjust(merged_chunks$p.value, method = 'BH')
+merged_chunks$Assay <- 'EMseq | 100,000 most variable CpG sites'
+merged_chunks$Feature_plot <- merged_chunks$feature
+```
+
+```{r}
+mixed_model_mae_results <- read.csv(params$merged_mae_results, row.names = 1)
+```
+
+```{r}
+mixed_models_combined <- rbind(mixed_model_mae_results, merged_chunks)
+write.csv(mixed_models_combined, 'MixedModels_combined.csv')
+```
+

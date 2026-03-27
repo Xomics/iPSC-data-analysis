@@ -1,0 +1,319 @@
+---
+title: "Methrix"
+output: html_document
+params:
+    methrix_dir: Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_raw/
+    DMRS_DM1: Z:/data/iPSC_data/Results/DMR/DMRS_DM1_PatientsControls.csv
+    isa_file: C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240822_Xomics_iPSC_Neurons_new_READ-ONLY.xlsx
+    outdir: Z:/data/iPSC_data/results/DMPK_Methylation/
+    mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+---
+
+```{r}
+library(methrix)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(pheatmap)
+```
+
+
+```{r}
+print(params)
+```
+
+
+```{r}
+outdir <- params$outdir
+
+if (!dir.exists(outdir)){
+  outdir <- getwd()
+}
+```
+
+
+## Read in Methrix object from shared disk
+```{r}
+meth <- methrix::load_HDF5_methrix(params$methrix_dir)
+```
+
+
+## Select ISA file to get correct sample IDs
+```{r}
+isa_assay_prot <- readxl::read_xlsx(params$isa_file, sheet = 'Assay - proteomics')
+```
+
+
+```{r}
+library(MultiAssayExperiment)
+library(HDF5Array)
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+
+phenotype_data <- as.data.frame(colData(mae))
+```
+
+
+## Select DMPK DM1 locus
+```{r}
+## CTG repeat coordinates: 45,770,205-45,770,264
+## 26 CpG sites: 488-777 upstream of this
+meth_DMPK_subset <- methrix::subset_methrix(m = meth, regions = data.table(chr='chr19', start = 45764750, end =45784750))
+
+#meth_DMPK_subset <- methrix::subset_methrix(m = meth, regions = data.table(chr='chr19', start = 45755000, end =45780000))
+```
+
+```{r}
+source_paths <- c(
+  "../support_functions/ReadMethrix2Df.R",      # when running in Rstudio
+  "ReadMethrix2Df.R"                            # when running in Nextflow
+)
+
+for (path in source_paths) {
+  if (file.exists(path)) {
+    source(path)
+    break
+  }
+}
+```
+
+
+## Combine with pheno df
+```{r}
+df_DMPK_list <- read_meth2df(meth_DMPK_subset, isa_assay_prot)
+df_DMPK <- data.frame(t(df_DMPK_list[[1]]))
+
+phenotype_data <- phenotype_data[rownames(df_DMPK),]
+
+df_DMPK$Phenotype <- phenotype_data$phenotype
+df_DMPK$Sample <- phenotype_data$observation.unit.identifier.crispr
+df_DMPK$Sample <- phenotype_data$sample.description
+```
+
+
+## Remove CHD2 and NANS samples
+```{r}
+df_DMPK <- df_DMPK[df_DMPK$Phenotype %in% c("Healthy", "Diseased: DM1", "Rescue: repeat excised CRISPR DM1"),]
+
+## TODO: Fix column in original colData(mae)
+df_DMPK[df_DMPK$Phenotype == "Rescue: repeat excised CRISPR DM1", "Sample"] <- 'DM1_Rescue'
+```
+
+
+## Plot methylation in the DMPK region
+```{r, fig.width=15, fig.height=4}
+df_long <- df_DMPK %>%
+  pivot_longer(
+    cols = starts_with("chr19_"),
+    names_to = "Genome_Location",
+    values_to = "Measurement"
+  ) %>%
+  mutate(Genome_Location = as.numeric(gsub("chr19_", "", Genome_Location)))
+
+df_avg <- df_long %>%
+  group_by(Phenotype, Genome_Location) %>%
+  summarize(Avr_Beta =  mean(Measurement), .groups= "drop")
+
+df_avg_Sample <- df_long %>%
+  group_by(Sample, Genome_Location) %>%
+  summarize(Avr_Beta =  mean(Measurement), .groups= "drop")
+```
+
+
+```{r, fig.width=15, fig.height=4}
+df_avg_Sample_26CpG <- df_avg_Sample[df_avg_Sample$Genome_Location > 45770752 & df_avg_Sample$Genome_Location < 45771041, ] 
+n_CpG <- length(unique(df_avg_Sample_26CpG$Genome_Location))
+
+ggp <- ggplot(df_avg_Sample_26CpG, aes(x = Genome_Location, y = Avr_Beta, color = Sample, group = Sample)) +
+  geom_line(size=1) +
+  labs(title = paste0(n_CpG, ' beta-values measured upstream of the CTG repeat'), 
+       x= 'GenomeLocation',
+       y ='Beta-value') +
+  coord_cartesian(ylim =c(0, 1)) +
+  theme_bw()
+ggp
+ggsave('Meth_DMPKrep_26CpG.pdf', ggp, width = 12, height = 6)
+```
+
+
+## Smoothen plot by taking average of every 10 CpG sites
+```{r}
+df_binned <- df_avg_Sample %>%
+  mutate(bin = Genome_Location %/% 200) %>%
+  group_by(bin, Sample) %>%
+  summarise(
+    avg_beta = mean(Avr_Beta),
+    bin_start = min(Genome_Location),
+    bin_end = max(Genome_Location),
+    .groups = "drop")
+
+
+df_binned <- df_binned %>%
+  mutate(bin_center = (bin_start + bin_end) / 2)
+
+```
+
+
+## DMRs
+```{r}
+dmrs_sign <- read.csv(params$DMRS_DM1, row.names=1)
+dmrs_sign
+
+# 20 kb region
+start <- 45764750
+end <- 45784750
+
+# DMRs in this region
+dmrs_sign_chr19 <- dmrs_sign[dmrs_sign$chr == 'chr19',]
+dmrs_sign_chr19_DMPK_20kb <- dmrs_sign_chr19[dmrs_sign_chr19$start >= start & dmrs_sign_chr19$end <= end,] 
+```
+
+
+
+## Plot complete 20k region
+```{r, fig.width=16, fig.height=5}
+dmrs_plot_data <- dmrs_sign_chr19_DMPK_20kb %>%
+  mutate(ymin = -0.1,
+         ymax = -0.05,
+         xmid = (start + end) / 2,
+         ymid = (ymin - ymax / 2))
+
+ggp <- ggplot(df_binned, aes(x = bin_center, y = avg_beta, color = Sample, group = Sample)) +
+  geom_line(size = 1) +
+  
+  # Repeat grey rectangle
+  geom_rect(aes(xmin = 45770200, xmax = 45770264, ymin = -0.1, ymax = -0.05),
+            fill = "lightgrey", color = 'black', alpha = 0.05, inherit.aes = FALSE) +
+  annotate("text", x = 45770230, y = -0.02, label = "Rep",
+           color = "black", size = 3) +
+  
+  # Indicate DMRs
+  geom_rect(data = dmrs_plot_data,
+            aes(xmin = start, xmax = end, ymin = ymin, ymax = ymax),
+            fill = "blue", color = "black", alpha = 0.3, inherit.aes = FALSE) +
+  
+  # Labels for each DMR (numbers from dataframe)
+  geom_text(data = dmrs_plot_data,
+            aes(x = xmid, y = ymid, label = nCG),
+            color = "black", size = 3, inherit.aes = FALSE) +
+  
+  labs(title = paste0(n_CpG, " beta-values measured upstream of the CTG repeat"), 
+       x = "GenomeLocation",
+       y = "Beta-value") +
+  coord_cartesian(ylim = c(-0.1, 1)) +
+  theme_bw()
+
+ggp
+
+ggsave('Meth_DMPKrep_20k_CLONES.pdf', ggp, width = 18, height = 4.5)
+```
+
+
+
+## Zoom in to DMR regions
+```{r, fig.width=16, fig.height=5}
+rep_min <- 45770200
+rep_max <- 45770264
+
+df_binned_zoomin <- df_binned[df_binned$bin_start > 45766500 & df_binned$bin_end < 45771500, ]
+
+
+df_binned_broken <- df_binned_zoomin %>%
+  group_by(Sample) %>%
+  arrange(bin_center) %>%
+  mutate(
+    bin_center = ifelse(
+      lag(bin_center) < rep_min & bin_center > rep_max, NA, bin_center
+    )
+  )
+
+
+ggp <- ggplot(df_binned_broken, aes(x = bin_center, y = avg_beta, color = Sample, group = Sample)) +
+  geom_line(size = 1, na.rm = T) +
+  
+  # Repeat grey rectangle
+  geom_rect(aes(xmin = rep_min, xmax = rep_max, ymin = -0.1, ymax = 0.3),
+            fill = "lightgrey", color = 'black', alpha = 0.3, inherit.aes = FALSE) +
+  annotate("text", x = 45770230, y = 0.1, label = "DMPK Repeat",
+           color = "black", size = 4, angle =90) +
+  
+  # Indicate DMRs
+  geom_rect(data = dmrs_plot_data,
+            aes(xmin = start, xmax = end, ymin = ymin, ymax = ymax),
+            fill = "blue", color = "black", alpha = 0.3, inherit.aes = FALSE) +
+  
+  # Labels for each DMR (numbers from dataframe)
+  geom_text(data = dmrs_plot_data,
+            aes(x = xmid, y = ymid, label = nCG),
+            color = "black", size = 3, inherit.aes = FALSE) +
+  
+  labs(title = paste0("Beta-values measured upstream of the CTG repeat"), 
+       x = "GenomeLocation",
+       y = "Beta-value") +
+  coord_cartesian(ylim = c(-0.1, 1)) +
+  theme_bw()
+
+ggp
+
+ggsave('Meth_DMPKrep_DMRs.pdf', ggp, width = 18, height = 4.5)
+```
+
+
+## Heatmap of DMRs
+## Select DMPK DM1 locus
+```{r}
+## CTG repeat coordinates: 45,770,205-45,770,264
+## 26 CpG sites: 488-777 upstream of this
+meth_DMPK_subset <- methrix::subset_methrix(m = meth, regions = data.table(chr='chr19', start = min(as.numeric(dmrs_sign_chr19_DMPK_20kb$start)), end = max(as.numeric(dmrs_sign_chr19_DMPK_20kb$end))))
+
+## Combine with pheno df
+df_DMPK_list <- read_meth2df(meth_DMPK_subset, isa_assay_prot)
+
+df_DMPK <- data.frame(t(df_DMPK_list[[1]]))
+
+phenotype_data <- phenotype_data[rownames(df_DMPK),]
+
+df_DMPK$Phenotype <- phenotype_data$phenotype
+df_DMPK$Sample <- phenotype_data$sample.description
+
+## Remove CHD2 and NANS samples
+df_DMPK <- df_DMPK[df_DMPK$Phenotype %in% c("Healthy", "Diseased: DM1", "Rescue: repeat excised CRISPR DM1"),]
+```
+
+```{r}
+ggp <- pheatmap(
+    df_DMPK[, c(1:374)],
+    cluster_rows = T,
+    cluster_cols = F,
+    show_colnames = F,
+    show_rownames = T,
+    labels_row = df_DMPK$Sample,
+    main = "Heatmap of DMRs"
+)
+ggsave('Meth_DMRs_Heatmap.pdf', ggp, width = 12, height = 10)
+```
+
+
+## Only repeat locus
+```{r, fig.width=17, fig.height=4}
+df_avg_Sample_rep <- df_avg_Sample[df_avg_Sample$Genome_Location > 45770100 & df_avg_Sample$Genome_Location < 45770350, ] 
+n_CpG <- length(unique(df_avg_Sample_rep$Genome_Location))
+
+ggp <- ggplot(df_avg_Sample_rep, aes(x = Genome_Location, y = Avr_Beta, color = Sample, group = Sample)) +
+  geom_line(size=1) +
+  geom_rect(aes(xmin=45770200, xmax =45770264, ymin = -0.1, ymax = 0),
+            fill = "lightgrey", alpha =0.05) +
+  annotate("text", x = 45770230, y = -0.01, label = "Rep", color = "black", size =3) +
+  labs(title = paste0(n_CpG, ' beta-values measured around the CTG repeat'), 
+       x= 'GenomeLocation',
+       y ='Beta-value') +
+  coord_cartesian(ylim =c(0, 0.6)) +
+  theme_bw()
+
+ggp
+ggsave('Meth_DMPKrep.pdf', ggp, width = 13, height = 5)
+```
+
+

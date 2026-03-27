@@ -1,0 +1,181 @@
+---
+title: 'Linear mixed models'
+author:
+  - Casper de Visser^[Radboud university medical center, Casper.deVisser@radboudumc.nl]
+output:
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  chunk: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  mae_object: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  outdir: Z:/data/iPSC_data/results/RLM/
+---
+
+## Params
+```{r read_multiassayexperiment}
+print(params)
+outdir <- params$outdir
+```
+
+
+## Run MAE for phenotype data
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+## Multi Assay Experiment object
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_object, 
+  prefix = 'mae')
+
+## Phenotype data frame
+pheno_df <- as.data.frame(colData(mae))
+```
+
+
+## Mixed effect model with cell line as random effect
+```{r, warning=FALSE, message=FALSE}
+
+## Custom function for running linear model on a chunk
+run_rand_model_chunk <- function(df, features, pred, DM1_ONLY=F) {
+  
+  
+  
+  # Select only DM1 and control samples if paramater DM1_ONLY used
+  if (DM1_ONLY)  {
+    df <- df[df$phenotype_DM1 %in% c("Diseased: DM1", "Healthy"), ]
+  }
+
+  # Run mixed models on all available features
+  model_result <- do.call(rbind, lapply(
+                           features,
+                           run_MixedModel_df,
+                           df=df,
+                           predictor=pred))
+  #adjust p-values
+  model_result$p.adj <- p.adjust(model_result$p.value, method = "BH")
+  model_result$rank <- rank(model_result$p.value)
+
+  return(model_result)
+}
+```    
+
+
+## Read chunk csv file to dataframe
+```{r}
+chunk_df <- read.csv(params$chunk, row.names=1)
+``` 
+
+
+## Remove features that are non-variable in the nested groups
+```{r}
+require(dplyr)
+
+## Remove columns that are phenotype data    
+features <- setdiff(names(chunk_df), union(colnames(pheno_df), c('sample.renames', 'clone_ids', 'bio_reps', 'Disease'))) #TODO
+features <- features[features != "ENSG00000129824"] #TODO
+    
+## Remove non-variable features 
+chunk_df %>%
+    group_by(phenotype, sample.renames, bio_reps) %>%
+    summarize(across(all_of(features),
+                     ~var(.x, na.rm = TRUE),
+                     .names = "var_{col}")) %>%
+    ungroup() -> variance_summary
+
+variance_summary_cleaned <- variance_summary %>%
+  select(which(colSums(select(., starts_with("var_")), na.rm = TRUE) != 0))
+features <- colnames(variance_summary_cleaned[, 4:ncol(variance_summary_cleaned)])
+features <- gsub("var_", "", features)
+```
+
+
+## Set phenotypic columns as predictors
+```{r}
+## Add column as factor
+chunk_df$sample.renames <- as.factor(as.character(chunk_df$sample.renames))
+
+## Make other columns factors too
+chunk_df$bio_reps <- as.factor(as.character(chunk_df$bio_reps))
+
+## Add phenotype as factor
+chunk_df$phenotype <- as.factor(chunk_df$phenotype)
+chunk_df$phenotype_DM1 <- as.factor(chunk_df$phenotype_DM1)
+
+## Add Healthy as first level
+chunk_df$phenotype <- relevel(as.factor(chunk_df$phenotype), ref = 'Healthy')
+chunk_df$phenotype_DM1 <- relevel(as.factor(chunk_df$phenotype_DM1), ref = "Healthy")
+chunk_df$Disease <- relevel(as.factor(chunk_df$Disease), ref = "Healthy")
+```
+
+
+## Chunk Name
+```{r}
+chunk_name <- paste0(params$chunk)
+chunk_name <- gsub(".csv", "", chunk_name)
+```
+
+
+
+## Run Mixed Effect model for comparing individual disease groups
+```{r}
+#model <- run_rand_model_chunk(chunk_df, features, 'phenotype')
+# Save to .csv
+#write.csv(model, file = paste0('Model_', chunk_name, '.csv')) ##Can this be the same for every comparison?
+```
+
+
+## Run Mixed Effect model for comparing female and male lines
+```{r}
+model <- run_rand_model_chunk(chunk_df, features, 'sex')
+# Save to .csv
+write.csv(model, file = paste0('Model_Sex__', chunk_name, '.csv'))
+```
+
+
+## Run Mixed Effect model for comparing Healty and Patient lines
+```{r} 
+#model <- run_rand_model_chunk(chunk_df, features, 'Disease')
+## Save to CSV
+#write.csv(model, file = paste0('Model_AllDisease__', chunk_name, '.csv'))
+```
+
+## OPTIONAL
+## Only select DM patient 2 and 3
+```{r}
+
+ DM_p1_names <- c(
+   'IPS20_00122_1',
+   'IPS20_00122_2',
+   'IPS20_00122_3',
+   'IPS23_00090_1',
+   'IPS23_00090_2',
+   'IPS23_00090_3'
+)
+ 
+sample_names <- rownames(colData(mae))
+sample_names_NoDMP1 <- sample_names[!sample_names %in% DM_p1_names]
+
+
+chunk_df_DM_P2_P3 <- chunk_df[sample_names_NoDMP1,]
+
+```
+
+
+
+## Run Mixed Effect model, comparing only DM1 group to all control group (including Rescue line)
+```{r}
+#model <- run_rand_model_chunk(chunk_df_DM_P2_P3, features, 'phenotype_DM1', DM1_ONLY=TRUE)
+## Save to .csv
+#write.csv(model, file = paste0('Model_DM1_CRISPR_', chunk_name, '.csv'))
+```
+
+
+## Session information
+
+```{r}
+sessionInfo()
+```
+
+

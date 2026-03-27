@@ -1,0 +1,42 @@
+experiment_names:
+  shorter_names: 
+    'EMseq | 100,000 most variable CpG sites': 'EMseq'
+    'Lipidomics, Targeted | imputed | log': 'Lipidomics_Targeted'
+    'Lipidomics, Targeted | imputed | log  | TA': 'Lipidomics_Targeted'
+    'Lipidomics, Untargeted': 'Lipidomics_Untargeted'
+    'Lipidomics, Untargeted | filtered': 'Lipidomics_Untargeted'
+    'Metabolomics, LUMC | total area normalized | annotated': 'Metabolomics_LUMC'
+    'Metabolomics, LUMC | total area normalized': 'Metabolomics_LUMC'
+    'Metabolomics, TML': 'Metabolomics_TML'
+    'Proteomics': 'Proteomics'
+    'RNAseq | RTC': 'RNAseq_RTC'
+  general_selection:
+    - 'EMseq | 100,000 most variable CpG sites'
+    - 'Lipidomics, Targeted | imputed | log'
+    - 'Lipidomics, Untargeted'
+    - 'Metabolomics, LUMC | total area normalized'
+    - 'Metabolomics, TML'
+    - 'Proteomics'
+    - 'RNAseq | RTC'
+  PCA_selection:
+    - 'EMseq | 100,000 most variable CpG sites'
+    - 'EMseq | 100,000 random CpG sites'
+    - 'Lipidomics, Targeted | imputed | log'
+    - 'Lipidomics, Untargeted'
+    - 'Metabolomics, LUMC | total area normalized'
+    - 'Metabolomics, TML'
+    - 'Proteomics'
+    - 'RNAseq | RTC'
+  Annotated_data:
+    - 'EMseq | 100,000 most variable CpG sites'
+    - 'Lipidomics, Targeted | imputed | log'
+    - 'Lipidomics, Untargeted | filtered'
+    - 'Metabolomics, LUMC | total area normalized | annotated'
+    - 'Proteomics'
+    - 'RNAseq | RTC'
+  chunks_mixed_model: 
+  # Select only one assay
+#    - 'EMseq | 100,000 most variable CpG sites'
+    - 'Proteomics'
+#    - 'RNAseq | RTC'
+

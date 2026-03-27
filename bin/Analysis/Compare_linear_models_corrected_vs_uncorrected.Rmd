@@ -1,0 +1,215 @@
+---
+title: "RLM_plot_results"
+output: html_document
+date: "2024-11-15"
+params:
+  outdir: Z:/data/iPSC_data/results/MixedModels/Plots
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  config_file: 'config.yml'
+---
+
+# Visualize results of linear modelling
+
+## Parameters
+```{r}
+print(params)
+outdir <- params$outdir
+```
+
+## Read data and metadata: MultiAssayExperiment
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+```
+
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+## Assay selection
+```{r}
+assay_names <- config$experiment_names$general_selection
+assay_names
+```
+
+
+## Phenotypic data
+```{r}
+pheno_df <- as.data.frame(colData(mae))
+```
+
+
+## Read nested mixed models (disease-specific associations)
+```{r}
+MixedModel_phenotype <-  read.csv('MixedModels2/Model_phenotype.csv', row.names=1)
+MixedModel_phenotype$df <- NULL
+```
+
+
+# Proteomics
+
+## Get Proteomics data per disease group (no MOFA correction)
+```{r}
+MixedModel_phenotype_prot <- MixedModel_phenotype[MixedModel_phenotype$Assay == 'Proteomics',]
+MixedModel_phenotype_prot_sign <- MixedModel_phenotype_prot[MixedModel_phenotype_prot$p.adj < 0.05,]
+
+MixedModel_phenotype_prot_NANS <- MixedModel_phenotype_prot_sign[MixedModel_phenotype_prot_sign$outcome == 'phenotypeDiseased: NANS-CDG',]
+#MixedModel_phenotype_prot_DM1 <- MixedModel_phenotype_prot_sign[MixedModel_phenotype_prot_sign$outcome == 'phenotypeDiseased: DM1',]
+MixedModel_phenotype_prot_CHD2 <- MixedModel_phenotype_prot_sign[MixedModel_phenotype_prot_sign$outcome == 'phenotypeDiseased: CHD2',]
+
+## DM1 including vs CRISPR line
+MixedModel_phenotype_prot_DM1 <- read.csv('MixedModels_DM1_CRISPR_onlySampleRenames/Model_phenotype_DM1_Proteomics.csv', row.names=1)
+MixedModel_phenotype_prot_DM1 <- MixedModel_phenotype_prot_DM1[MixedModel_phenotype_prot_DM1$p.adj < 0.05,]
+```
+
+
+## Read Proteomics (after MOFA correction)
+```{r}
+MixedModel_CORRECTED_Prot <- read.csv('MixedModels_CORRECTED/Model_phenotype_Proteomics.csv', row.names=1)
+MixedModel_CORRECTED_Prot_SIGN <- MixedModel_CORRECTED_Prot[MixedModel_CORRECTED_Prot$p.adj < 0.05,]
+
+MixedModel_CORRECTED_Prot_NANS <- MixedModel_CORRECTED_Prot_SIGN[MixedModel_CORRECTED_Prot_SIGN$outcome == 'phenotypeDiseased: NANS-CDG',]
+#MixedModel_CORRECTED_Prot_DM1 <- MixedModel_CORRECTED_Prot_SIGN[MixedModel_CORRECTED_Prot_SIGN$outcome == 'phenotypeDiseased: DM1',]
+MixedModel_CORRECTED_Prot_CHD2 <- MixedModel_CORRECTED_Prot_SIGN[MixedModel_CORRECTED_Prot_SIGN$outcome == 'phenotypeDiseased: CHD2',]
+
+## DM1 including vs CRISPR line
+MixedModel_CORRECTED_Prot_DM1 <- read.csv('MixedModels_CORRECTED/Model_phenotype_DM1_Proteomics.csv', row.names=1)
+MixedModel_CORRECTED_Prot_DM1 <- MixedModel_CORRECTED_Prot_DM1[MixedModel_CORRECTED_Prot_DM1$p.adj < 0.05,]
+```
+
+
+```{r}
+## Function to make data frame of overlapping sign hits
+get_overlap_df <- function(v1, v2) {
+  
+  Overlap <- union(v1, v2)
+  df <- data.frame(
+    Feature = Overlap, 
+    Uncorrected = Overlap %in% v1,
+    Corrected = Overlap %in% v2
+  )
+  df <- df[order(-(df$Uncorrected & df$Corrected), df$Feature),]
+  return(df)
+}
+
+Prot_NANS_overlap <- get_overlap_df(MixedModel_phenotype_prot_NANS$feature, MixedModel_CORRECTED_Prot_NANS$feature)
+Prot_DM1_overlap <- get_overlap_df(MixedModel_phenotype_prot_DM1$feature, MixedModel_CORRECTED_Prot_DM1$feature)
+Prot_CHD2_overlap <- get_overlap_df(MixedModel_phenotype_prot_CHD2$feature, MixedModel_CORRECTED_Prot_CHD2$feature)
+
+```
+
+
+## Check overlapping significant proteomics hits per disease
+```{r}
+library(VennDiagram)
+
+venn.plot <- venn.diagram(
+  x = list(Corrected = MixedModel_CORRECTED_Prot_CHD2$feature, Uncorrected = MixedModel_phenotype_prot_CHD2$feature),
+  filename = 'CHD2_Prot.png',
+  scaled=F,
+  fill = c("skyblue", "pink"), 
+  cex=2,
+  cat.cex=2,
+  cat.dist = -0.8
+)
+```
+
+
+```{r}
+library(VennDiagram)
+
+venn.plot <- venn.diagram(
+  x = list(Corrected = MixedModel_CORRECTED_Prot_NANS$feature, Uncorrected = MixedModel_phenotype_prot_NANS$feature),
+  filename = 'NANS_Prot.png',
+  scaled=F,
+  fill = c("skyblue", "pink"), 
+  cex=2,
+  cat.cex=2,
+  cat.dist = -0.8
+)
+```
+
+
+```{r}
+library(VennDiagram)
+
+venn.plot <- venn.diagram(
+  x = list(Corrected = MixedModel_CORRECTED_Prot_DM1$feature, Uncorrected = MixedModel_phenotype_prot_DM1$feature),
+  filename = 'DM1_Prot.png',
+  scaled=F,
+  fill = c("skyblue", "pink"), 
+  cex=2,
+  cat.cex=2,
+  cat.dist = -0.8
+)
+```
+
+
+
+
+
+# Transcriptomics
+
+## Get RNAseq data per disease group
+```{r}
+read_MixedModel_results <- function(file_path, assay_name) {
+  results_df <- read.csv(file_path)
+  results_df$X <- NULL
+  ## Remove the CRISPR comparisons
+  results_df <- results_df[!grepl('excised', results_df$outcome), ]
+  if (!("nest_effect" %in% names(results_df))) {
+    results_df$nest_effect <- 0
+    results_df <- results_df[,c(1:8, 11,9,10)]
+  }
+  results_df$p.adj <- p.adjust(results_df$p.value, method = "BH")
+  results_df$Assay <- assay_name
+  results_df$Feature_plot <- results_df$feature #If not other feature ID available
+  return(results_df)
+}
+
+MixedModel_phenotype_RNAseq <- MixedModel_phenotype[MixedModel_phenotype$Assay == 'RNAseq | RTC',]
+MixedModel_phenotype_RNAseq_sign <- MixedModel_phenotype_RNAseq[MixedModel_phenotype_RNAseq$p.adj < 0.05,]
+
+MixedModel_phenotype_RNAseq_NANS <- MixedModel_phenotype_RNAseq_sign[MixedModel_phenotype_RNAseq_sign$outcome == 'phenotypeDiseased: NANS-CDG',]
+#MixedModel_phenotype_RNAseq_DM1 <- MixedModel_phenotype_RNAseq_sign[MixedModel_phenotype_RNAseq_sign$outcome == 'phenotypeDiseased: DM1',]
+MixedModel_phenotype_RNAseq_CHD2 <- MixedModel_phenotype_RNAseq_sign[MixedModel_phenotype_RNAseq_sign$outcome == 'phenotypeDiseased: CHD2',]
+
+## DM1 including vs CRISPR line
+MixedModel_phenotype_RNAseq_DM1 <- read_MixedModel_results('MixedModels_DM1_CRISPR_onlySampleRenames/Model_Results_mergedRTC_DM.csv', assay_name = 'RNAseq | RTC')
+MixedModel_phenotype_RNAseq_DM1 <- MixedModel_phenotype_RNAseq_DM1[MixedModel_phenotype_RNAseq_DM1$p.adj < 0.05,]
+```
+
+
+## Read RNA-seq data (after MOFA correction)
+```{r}
+MixedModel_CORRECTED_RNAseq <- read.csv('MixedModels_CORRECTED/Model_phenotype_RNAseq__RTC.csv', row.names=1)
+MixedModel_CORRECTED_RNAseq_SIGN <- MixedModel_CORRECTED_RNAseq[MixedModel_CORRECTED_RNAseq$p.adj < 0.05,]
+
+MixedModel_CORRECTED_RNAseq_NANS <- MixedModel_CORRECTED_RNAseq_SIGN[MixedModel_CORRECTED_RNAseq_SIGN$outcome == 'phenotypeDiseased: NANS-CDG',]
+#MixedModel_CORRECTED_RNAseq_DM1 <- MixedModel_CORRECTED_RNAseq_SIGN[MixedModel_CORRECTED_RNAseq_SIGN$outcome == 'phenotypeDiseased: DM1',]
+MixedModel_CORRECTED_RNAseq_CHD2 <- MixedModel_CORRECTED_RNAseq_SIGN[MixedModel_CORRECTED_RNAseq_SIGN$outcome == 'phenotypeDiseased: CHD2',]
+
+## DM1 including vs CRISPR line
+MixedModel_CORRECTED_RNAseq_DM1 <- read.csv('MixedModels_CORRECTED/Model_phenotype_DM1_RNAseq__Deseq.csv', row.names=1)
+MixedModel_CORRECTED_RNAseq_DM1 <- MixedModel_CORRECTED_RNAseq_DM1[MixedModel_CORRECTED_RNAseq_DM1$p.adj < 0.05,]
+```
+
+## Analyze intersections of significant hits
+```{r}
+RNA_NANS_overlap <- get_overlap_df(MixedModel_phenotype_RNAseq_NANS$feature, MixedModel_CORRECTED_RNAseq_NANS$feature)
+RNA_DM1_overlap <- get_overlap_df(MixedModel_phenotype_RNAseq_DM1$feature, MixedModel_CORRECTED_RNAseq_DM1$feature)
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

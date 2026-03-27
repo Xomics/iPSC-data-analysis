@@ -1,0 +1,213 @@
+---
+title: "Lipidomics2Tabular"
+output: html_document
+params:
+  lipidomics_data: Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Targeted_lipidomics_(lipidyzer)/Results/Lipidyzer_Protein content normalized.xlsx
+  lipidomics_data_TA: Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Targeted_lipidomics_(lipidyzer)/Results/Lipidyzer_results.xlsx
+  sample_matching: "Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Sample list.xlsx"
+  isa_files: 'ipsc-data-analysis/20240514_Xomics iPSC Neurons_new_READ-ONLY.xlsx'
+  outdir: Z:/data/iPSC_data/iPSC_MAE
+ 
+---
+
+## Read processed lipidomics (targeted) data and save to tabular formats for the MultiAssayExperiment object
+
+#### Script parameters
+```{r}
+print(Sys.Date())
+print(params)
+```
+
+
+## Libraries
+```{r}
+library(openxlsx)
+library(dplyr)
+```
+
+## Read data
+```{r}
+lipidomics <- openxlsx::read.xlsx(params$lipidomics_data, rowNames = TRUE)
+
+## Sample metadata in separate data frame
+sample_metadata <- lipidomics[, 1:6]
+lipidomics$ExpNum <- NULL
+lipidomics$GroupNum <- NULL
+lipidomics$GroupName <- NULL
+lipidomics$SampleNorm <- NULL
+lipidomics$NormType <- NULL
+```
+
+
+## Remove QC samples from measurement data and sample metadata
+```{r}
+samples <- sample_metadata[sample_metadata$NormType == 'Samples' , 'SampleID']
+
+lipidomics_measurement_data <- lipidomics[lipidomics$SampleID %in% samples,]
+sample_metadata <- sample_metadata[sample_metadata$SampleID %in% samples,]
+```
+
+
+```{r}
+lipidomics_measurement_data_TA <- openxlsx::read.xlsx(params$lipidomics_data_TA, rowNames = TRUE, sheet = 7)
+lipidomics_measurement_data_TA <- lipidomics_measurement_data_TA[lipidomics_measurement_data_TA$SampleID %in% samples,]
+```
+
+
+## Add sample IDs from LUMC sample mapping table
+```{r}
+## Read excel table
+lumc_sample_matching <- read.xlsx(params$sample_matching)
+
+## Check if sample order is equal to mapping table
+stopifnot(identical(lumc_sample_matching$Radboud.code, lipidomics_measurement_data$SampleID))
+
+## Add correct sample identifiers
+lipidomics_measurement_data$SampleID <- lumc_sample_matching$Sample.name 
+lipidomics_measurement_data_TA$SampleID <- lumc_sample_matching$Sample.name 
+sample_metadata$SampleID <- lumc_sample_matching$Sample.name 
+
+## Merge with LUMC excel table
+lumc_sample_matching$SampleID <- lumc_sample_matching$Sample.name
+sample_metadata <- merge(sample_metadata, lumc_sample_matching, by = 'SampleID')
+```
+
+
+## Read ISA file
+```{r}
+isa_sample <- read.xlsx("C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240514_Xomics iPSC Neurons_new_READ-ONLY.xlsx", sheet = 'Assay - lipidomics_UT')
+
+# Map Sample namings, without biological replicate numbers
+UniSampleIDs <- lapply(isa_sample$assay.identifier, function(x) {
+    name <- strsplit(x, split = '_Lipidomics')[[1]][[1]]
+})
+
+## Add the Sample IDs with bio replicate
+SampleID_withrep <- lapply(seq(1, 44), function(x) {
+    name <- isa_sample[x, 6]
+    num <- isa_sample[x, 8]
+    name <- paste0(name, '_', num)
+    name
+})
+sample_matching <- data.frame(isa_sample$sample.identifier, 
+                              as.character(UniSampleIDs),
+                              as.character(SampleID_withrep))
+```
+
+
+## Check if Sample IDs now match
+```{r}
+GroupName_withrep <- lapply(seq(1, 44), function(x) {
+    name <- sample_metadata[x, 4]
+    num <- sample_metadata[x, 7]
+    name <- paste0(name, '_', num)
+    name
+})
+sample_metadata$SampleID_withrep <- as.character(GroupName_withrep)
+
+match(sample_metadata$SampleID_withrep, sample_matching$as.character.SampleID_withrep.)
+```
+
+
+### Measurement data
+```{r}
+head(lipidomics_measurement_data[, 1:5])
+dim(lipidomics_measurement_data)
+```
+
+
+### Sample metadata
+```{r}
+#sample_metadata <- cbind(sample_metadata, isa_sample) TODO: Combine with Assay file?
+head(sample_metadata)
+```
+
+
+### Filiter lipid features with more than 20% missingness
+```{r}
+source("support_functions/filter_impute.R")
+
+### Remove columns with 20% missingngess
+lipidomics_measurement_data_filtered <- remove_column_missingness(lipidomics_measurement_data)
+lipidomics_measurement_data_TA_filtered <- remove_column_missingness(lipidomics_measurement_data_TA)
+```
+
+### Heatmap NA values after filtering
+```{r}
+source("support_functions/heatmap_missingness.R")
+
+heatmap_missing(lipidomics_measurement_data, 'Lipidomics Targeted (LUMC)')
+heatmap_missing(lipidomics_measurement_data_filtered, 'Lipidomics Targeted (LUMC) filtered')
+heatmap_missing(lipidomics_measurement_data_TA_filtered, 'Lipidomics Targeted (LUMC) filtered')
+```
+
+## Impute missing values by half of the minimum
+```{r}
+## Protein content normalized data
+lipidomics_measurement_data_imputed <- lipidomics_measurement_data_filtered
+rownames(lipidomics_measurement_data_imputed) <- lipidomics_measurement_data_imputed$SampleID
+lipidomics_measurement_data_imputed$SampleID <- NULL
+lipidomics_measurement_data_imputed <- lipidomics_measurement_data_imputed %>% mutate_if(is.numeric, ~replace(., is.na(.), min(., na.rm = TRUE)/2))
+
+## Total are normalized data
+lipidomics_measurement_data_TA_imputed <- lipidomics_measurement_data_TA_filtered
+rownames(lipidomics_measurement_data_TA_imputed) <- lipidomics_measurement_data_TA_imputed$SampleID
+lipidomics_measurement_data_TA_imputed$SampleID <- NULL
+lipidomics_measurement_data_TA_imputed <- lipidomics_measurement_data_TA_imputed %>% mutate_if(is.numeric, ~replace(., is.na(.), min(., na.rm = TRUE)/2))
+```
+
+
+## Log transformation
+```{r}
+lipidomics_measurement_data_Log <- log2(lipidomics_measurement_data_imputed)
+lipidomics_measurement_data_TA_Log <- log2(lipidomics_measurement_data_TA_imputed)
+```
+
+
+## Plot distributions
+```{r}
+source("support_functions/PlotDistributions2.R")
+
+PlotDistributions(lipidomics_measurement_data, type = 'hist', main_title = 'With missing values' )
+PlotDistributions(lipidomics_measurement_data_imputed, type = 'hist', main_title = 'Imputed with half of minimum' )
+PlotDistributions(lipidomics_measurement_data_Log, type = 'hist', main_title = 'Log-transformed' )
+PlotDistributions(lipidomics_measurement_data_TA_Log, type = 'hist', main_title = 'TA Log-transformed' )
+
+```
+
+### Boxplots per sample
+```{r}
+source('support_functions/BoxplotSamples.R')
+
+lipidomics_measurement_data_Log$Sample_ID <- rownames(lipidomics_measurement_data_Log)
+boxplot_samples(lipidomics_measurement_data_Log, 'Lipidomics (Targeted)')
+lipidomics_measurement_data_Log$Sample_ID <- NULL
+
+lipidomics_measurement_data_TA_Log$Sample_ID <- rownames(lipidomics_measurement_data_TA_Log)
+boxplot_samples(lipidomics_measurement_data_TA_Log, 'Lipidomics (Targeted)')
+lipidomics_measurement_data_TA_Log$Sample_ID <- NULL
+```
+
+## Create feature metadata table with classes
+```{r}
+feature_metadata <- data.frame(colnames(lipidomics_measurement_data_Log))
+feature_metadata$Class <- sub("\\..*", "",  names(lipidomics_measurement_data_Log))
+colnames(feature_metadata) <- c('Feature', 'Class')
+```
+
+
+
+## Save data and metadata to .CSV files
+```{r}
+write.csv(lipidomics_measurement_data_Log, file =  file.path(params$outdir, 'lipidomics_T_imputed_log_data.csv'), row.names = T)
+write.csv(lipidomics_measurement_data_imputed, file =  file.path(params$outdir, 'lipidomics_T_imputed_data.csv'), row.names = T)
+write.csv(lipidomics_measurement_data_TA_imputed, file =  file.path(params$outdir, 'lipidomics_T_TA_imputed_data.csv'), row.names = T)
+
+write.csv(sample_metadata, file =  file.path(params$outdir, 'lipidomics_T_sample_metadata.csv'), row.names = F)
+write.csv(feature_metadata, file =  file.path(params$outdir, 'lipidomics_T_feature_metadata.csv'))
+```
+
+
+```{r}
+sessionInfo()   
+```

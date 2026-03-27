@@ -1,0 +1,761 @@
+---
+title: "Create MultiAssayExperiment object"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+params:
+
+  isa_files: Z:/data/iPSC_data/iPSC_MAE/XomicsiPSCneurons_march_7.xlsx
+  
+  metabolomics_tml_data_Log: Z:/data/iPSC_data/iPSC_MAE/metabolomics_tml_data.csv
+  metabolomics_tml_feature_metadata: Z:/data/iPSC_data/iPSC_MAE/metabolomics_tml_feature_metadata.csv
+  metabolomics_tml_sample_metadata: Z:/data/iPSC_data/iPSC_MAE/metabolomics_tml_sample_metadata.csv
+  
+  proteomics_data: Z:/data/iPSC_data/iPSC_MAE/proteomics_data.csv
+  proteomics_feature_metadata: Z:/data/iPSC_data/iPSC_MAE/proteomics_feature_metadata.csv
+  
+  lumc_sample_matching: 'Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Sample list.xlsx'
+  
+  metabolomics_lumc_data_total: Z:/data/iPSC_data/iPSC_MAE/metabolomics_lumc_data_total.csv
+  metabolomics_lumc_data_protein: Z:/data/iPSC_data/iPSC_MAE/metabolomics_lumc_data_protein.csv
+  metabolomics_lumc_sample_metadata: Z:/data/iPSC_data/iPSC_MAE/metabolomics_lumc_sample_metadata.csv
+  metabolomics_lumc_feature_metadata: Z:/data/iPSC_data/iPSC_MAE/metabolomics_lumc_feature_metadata.csv
+  
+  metabolomics_lumc_data_total_ann: Z:/data/iPSC_data/iPSC_MAE/metabolomics_lumc_data_total_Ann.csv
+  metabolomics_lumc_feature_metadata_ann: Z:/data/iPSC_data/iPSC_MAE/metabolomics_lumc_feature_metadata_Ann.csv
+  
+  metabolomics_lumc_data_unfiltered: Z:/data/iPSC_data/iPSC_MAE/metabolomics_lumc_data_raw_log.csv
+  metabolomics_lumc_feature_metadata_unfiltered: Z:/data/iPSC_data/iPSC_MAE/metabolomics_lumc_feature_metadata_raw.csv
+  
+  lipidomics_T_log_data: Z:/data/iPSC_data/iPSC_MAE/lipidomics_T_imputed_log_data.csv
+  lipidomics_T_TA_log_data: Z:/data/iPSC_data/iPSC_MAE/lipidomics_T_TA_imputed_data.csv
+  lipidomics_T_sample_metadata: Z:/data/iPSC_data/iPSC_MAE/lipidomics_T_sample_metadata.csv
+  lipidomics_T_feature_metadata: Z:/data/iPSC_data/iPSC_MAE/lipidomics_T_feature_metadata.csv
+  
+  lipidomics_UT_data: Z:/data/iPSC_data/iPSC_MAE/lipidomics_UT_data.csv
+  lipidomics_UT_feature_metadata: Z:/data/iPSC_data/iPSC_MAE/lipidomics_UT_feature_metadata.csv
+  lipidomics_UT_sample_metadata: Z:/data/iPSC_data/iPSC_MAE/lipidomics_UT_sample_metadata.csv
+  lipidomics_UT_data_filtered: Z:/data/iPSC_data/iPSC_MAE/lipidomics_UT_data_filtered.csv
+  lipidomics_UT_feature_metadata_filtered: Z:/data/iPSC_data/iPSC_MAE/lipidomics_UT_feature_metadata_filtered.csv
+  lipidomics_UT_sample_metadata_filtered: Z:/data/iPSC_data/iPSC_MAE/lipidomics_UT_sample_metadata_filtered.csv
+  
+  mRNAseq_data_cpm: Z:/data/iPSC_data/iPSC_MAE/mrna_cpm_log.csv
+  mRNAseq_data_deseq: Z:/data/iPSC_data/iPSC_MAE/mrna_deseq_log.csv
+  mRNAseq_feature_metadata: Z:/data/iPSC_data/iPSC_MAE/mrna_feature_metadata.csv
+  mRNAseq_feature_metadata_rt: Z:/data/iPSC_data/iPSC_MAE/mrna_feature_metadata_rt.csv
+  
+  mRNAseq_data_rtc_vst: Z:/data/iPSC_data/iPSC_MAE/mrna_deseq_rt_vst.csv
+  
+  EMseq_filt_sd: Z:/data/iPSC_data/iPSC_MAE/meth_filt_sd.RDS
+  EMseq_filt_rand: Z:/data/iPSC_data/iPSC_MAE/meth_filt_rand.RDS
+  EMseq_mapping_table: Z:/data/iPSC_data/iPSC_EMseq/MappingCPG2Gene.csv
+  
+  h5_outdir: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+---
+
+
+This R notebook creates a MultiAssayExperiment using the *CSV* files containing preprocessed omics measurements.
+
+
+## Libraries
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+suppressMessages(library(SummarizedExperiment))
+suppressMessages(library(MultiAssayExperiment))
+suppressMessages(library(HDF5Array))
+```
+
+
+```{r parameters}
+print(Sys.Date())
+print(params)
+```
+
+
+## Phenotype data
+
+Read phenotype information from CSV file.
+
+```{r read_phenotype_data}
+pheno_df <- readxl::read_xlsx(params$isa_files, sheet = 4)
+# pheno_df <- read.csv(params$phenotype_data, stringsAsFactors = TRUE)
+cat("Column names of pheno_df:\n")
+print(names(pheno_df))
+cat("Dimensions of pheno_df:\n")
+dim(pheno_df)
+```
+
+## Add Sex column from observation unit tab
+```{r}
+observationUnit_df <- readxl::read_excel(params$isa_files, sheet =3)
+
+# Add new column for gender, to match observation unit df
+gender_col <- lapply(pheno_df$`observation unit identifier`, function(x) {
+    gender <- observationUnit_df[observationUnit_df$`observation unit identifier` == x, 7]
+    gender <- gender[[1]]
+})
+
+pheno_df$sex <- as.character(gender_col)
+```
+
+
+### Tripling number of rows (adding biological replicates)
+```{r}
+library(stringr)
+library(purrr)
+
+source('./createMAE_functions/tripling_rows')
+
+pheno_df_replicates <- tripling_rows(pheno_df)
+
+## Correct passage number columns
+NewPassageNumbers <- sapply(seq_len(nrow(pheno_df_replicates)), function(i) {
+  idx <- as.integer(sub(".*(\\d+)$", "\\1", pheno_df_replicates$`sample identifier`[i]))
+  vals <- strsplit(pheno_df_replicates$`passage number`[i], ";")[[1]]
+  vals[idx]
+})
+
+pheno_df_replicates$PassageNumber <- as.numeric(NewPassageNumbers)
+pheno_df_replicates$`passage number` <- NULL
+## TODO: Remove replicates that do not exist for all -omics layers?
+```
+
+
+### Sample IDs will be altered by R when added as colnames (in assays), add similar names here
+```{r}
+rownames(pheno_df_replicates) <- pheno_df_replicates$`sample identifier`
+pheno_df_temp <- data.frame(t(pheno_df_replicates))
+sample_colnames <- colnames(pheno_df_temp)
+pheno_df_replicates <- data.frame(t(pheno_df_temp))
+# Replace "." by underscore
+rownames(pheno_df_replicates) <- gsub("\\.", "_", rownames(pheno_df_replicates))
+```
+
+## Numerical columns to numerical
+```{r}
+pheno_df_replicates$age.at.sampling.from.host <- as.numeric(pheno_df_replicates$age.at.sampling.from.host)
+
+pheno_df_replicates$biosafety.level <- as.numeric(pheno_df_replicates$biosafety.level)
+
+pheno_df_replicates$days.in.vitro <- as.numeric(pheno_df_replicates$days.in.vitro)
+```
+
+
+## Add second observation unit column with other values for the CRISPR lines
+```{r}
+pheno_df_replicates$observation.unit.identifier.crispr <- pheno_df_replicates$observation.unit.identifier
+pheno_df_replicates[pheno_df_replicates$sample.name == 'DM1 patient 2 clone 1 repeat excised', 'observation.unit.identifier.crispr'] <- 'DM1_Rescue'
+pheno_df_replicates[pheno_df_replicates$sample.name == 'control 2 (originally CHD2 het in WTC control)', 'observation.unit.identifier.crispr'] <- 'CHD2_CRISPR'
+```
+
+
+## Create SummarizedExperiment per omics
+
+### Metabolomics TML
+```{r}
+feature_metadata <- read.csv(params$metabolomics_tml_feature_metadata, row.names = 1)
+feature_names <- rownames(feature_metadata)
+
+mtblmcs_data <- data.frame(t(read.csv(params$metabolomics_tml_data_Log, row.names = 1)))
+# Replace "." by underscore
+colnames(mtblmcs_data) <- gsub("\\.", "_", colnames(mtblmcs_data))
+# Ensure features are all in feature metadata
+mtblmcs_data <- mtblmcs_data[feature_names,]
+# Make columns numericals
+mtblmcs_data <- data.frame(sapply(mtblmcs_data, as.numeric))
+rownames(mtblmcs_data) <- feature_names
+# Fix typo in one sample name
+sample_names <- colnames(mtblmcs_data)
+sample_names[sample_names == 'IPS21_00151_2'] <- 'IPS22_00151_2'
+colnames(mtblmcs_data) <- sample_names 
+
+my_assay_list = list(
+  `Metabolomics, TML` = mtblmcs_data
+  )
+
+
+se <- SummarizedExperiment(
+    assays = my_assay_list,
+    # # rows: features
+    rowData = feature_metadata, 
+    # # columns: samples
+    #colData = sample_metadata, 
+    # # metadata about data processing
+    # metadata = list(),
+    checkDimnames = TRUE)
+
+experiment_list <- ExperimentList(list(`Metabolomics, TML` = se))
+
+```
+
+
+### Proteomics data and metadata
+```{r}
+## Feature metadata
+feature_metadata <- read.csv(params$proteomics_feature_metadata, row.names = 2)
+
+## Read proteomics data
+proteomics_data <- read.csv(params$proteomics_data, row.names = 1)
+
+# CDH2 --> CHD2
+rownames(proteomics_data) <- gsub("CDH2", "CHD2", rownames(proteomics_data))
+
+## Map to unified IDs in ISA Proteomics file
+isa_assay_prot <- readxl::read_excel(params$isa_files, sheet = 'Assay - Proteomics')
+### Add assay identifier column without tech rep number
+isa_assay_prot$`assay identifier2` <- substr(isa_assay_prot$`assay identifier`, 1, nchar(isa_assay_prot$`assay identifier`)-2)
+
+
+## Change sample order to ISA order
+proteomics_data <- proteomics_data[unique(match(isa_assay_prot$`assay identifier2`, rownames(proteomics_data))),]
+unique_ids <- lapply(1:nrow(proteomics_data), function(x) {
+    name1 <- isa_assay_prot[x, "sample identifier"]
+    s <- isa_assay_prot[x, "assay identifier2"]
+    rep <- substring(s, nchar(s), nchar(s))
+    paste0(name1, "_", rep)
+})
+rownames(proteomics_data) <- as.character(unique_ids)
+proteomics_data <- data.frame(t(proteomics_data))
+
+## Ensure the feature names match
+proteomics_data <- proteomics_data[rownames(feature_metadata),]
+
+## Replace . by underscore
+colnames(proteomics_data) <- gsub("\\.", "_", colnames(proteomics_data))
+
+## Remove columns with missing values
+proteomics_data_with_409B <- proteomics_data
+proteomics_data <- proteomics_data[ , colSums(is.na(proteomics_data))==0]
+
+
+my_assay_list = list(
+  `Proteomics` = proteomics_data
+)
+
+
+#colnames(my_assay_list[[1]]) <- rownames(sample_metadata)
+#print(identical(rownames(sample_metadata), colnames(my_assay)))
+
+
+se <- SummarizedExperiment(
+    assays = my_assay_list,
+    # # rows: features
+    rowData = feature_metadata,  
+    # # columns: samples
+    #colData = sample_metadata, 
+    # # metadata about data processing
+    # metadata = list(),
+    checkDimnames = TRUE)
+
+experiment_list <- append(experiment_list, (list(`Proteomics` = se)))
+```
+
+
+## Match sample names across all -omics data
+```{r}
+sample_names_overview <- data.frame(colnames(proteomics_data_with_409B), colnames(mtblmcs_data))
+colnames(sample_names_overview) <- c('Proteomics', 'Mtblmcs_TML')
+sample_names_overview
+```
+
+
+### Add Metabolomics LUMC sample names to overview
+```{r}
+# Read and transpose metabolomics data
+mtblmcs_data_lumc <- data.frame(t(read.csv(params$metabolomics_lumc_data_total, row.names = 1)))
+
+# Replace "." with "_" in column names to standardize sample names
+lumc_names_with_underscore <- gsub("\\.", "_", colnames(mtblmcs_data_lumc))
+
+# Match LUMC metabolomics sample names from overview to actual column names
+sample_names_overview$Mtblmcs_LUMC <- sapply(sample_names_overview$Mtblmcs_TML, function(x) {
+  if (x %in% lumc_names_with_underscore) {
+    x
+  } else if (x == "IPS21_00151_2") {
+    # Manual fix for known mismatch
+    "IPS22_00151_2"
+  } else {
+    NA
+  }
+})
+sample_names_overview
+```
+
+
+### Metabolomics data and metadata (LUMC)
+
+Prepare several `SummarizedExperiment` objects for the LUMC metabolomics data. 
+
+```{r prepare_metabolomics_lumc_experiments}
+
+lumc_sample_metadata <- read.csv(params$metabolomics_lumc_sample_metadata, row.names = 1)
+lumc_sample_metadata$Sample_Overview_names <- as.character(lumc_names_with_underscore)
+
+metabolomics_lumc_list <-  lapply(list(
+     `Metabolomics, LUMC | total area normalized` = list(
+      assay_name =  "Metabolomics, LUMC | total area normalized",
+      assay_data = params$metabolomics_lumc_data_total,
+      assay_sample_metadata = params$metabolomics_lumc_sample_metadata,
+      assay_feature_metadata = params$metabolomics_lumc_feature_metadata
+      ),
+     `Metabolomics, LUMC | total area normalized | annotated` = list(
+      assay_name =  "Metabolomics, LUMC | total area normalized | annotated",
+      assay_data = params$metabolomics_lumc_data_total_ann,
+      assay_sample_metadata = params$metabolomics_lumc_sample_metadata,
+      assay_feature_metadata = params$metabolomics_lumc_feature_metadata_ann
+      ),
+     # `Metabolomics, LUMC | protein content normalized` = list(
+     #  assay_name = "Metabolomics, LUMC | protein content normalized",
+     #  assay_data = params$metabolomics_lumc_data_protein,
+     #  assay_sample_metadata = params$metabolomics_lumc_sample_metadata,
+     #  assay_feature_metadata = params$metabolomics_lumc_feature_metadata
+     #  ),
+     `Metabolomics, LUMC | unfiltered` = list(
+      assay_name = "Metabolomics, LUMC | unfiltered",
+      assay_data = params$metabolomics_lumc_data_unfiltered,
+      assay_sample_metadata = params$metabolomics_lumc_sample_metadata,
+      assay_feature_metadata = params$metabolomics_lumc_feature_metadata_unfiltered
+      )
+  ), function(a) {
+  ## Measurement data
+  my_assay <- data.frame(t(read.csv(a$assay_data, row.names = 1)))
+  ## Sample metadata
+  sample_metadata <- read.csv(a$assay_sample_metadata, row.names = 1)
+  sample_metadata$Sample_Overview_names <- as.character(lumc_names_with_underscore)
+  rownames(sample_metadata) <- sample_metadata$Sample_Overview_names
+  colnames(my_assay) <- rownames(sample_metadata)
+  ## Feature metadata
+  feature_metadata <- read.csv(a$assay_feature_metadata, row.names = 1)
+  rownames(feature_metadata) <- feature_metadata$FeatureID
+  
+  my_assay_list <- list(my_assay)
+  names(my_assay_list) <- c(a$assay_name)
+
+  se <- SummarizedExperiment(
+      assays = my_assay_list,
+      # # rows: features
+      rowData = feature_metadata,
+      # # columns: samples
+      colData = sample_metadata,
+      # # metadata about data processing
+      # metadata = list(),
+      checkDimnames = TRUE)
+})
+
+experiment_list <- append(experiment_list, metabolomics_lumc_list)
+```
+
+
+### Lipidomics data (Targeted)
+```{r prepare_lipidomics}
+lipidomics_targeted_experiments_list <-  lapply(list(
+    `Lipidomics, Targeted | imputed | log` = list(
+      assay_name = "Lipidomics, Targeted | imputed | log",
+      assay_data = params$lipidomics_T_log_data,
+      assay_sample_metadata = params$lipidomics_T_sample_metadata,
+      assay_feature_metadata = params$lipidomics_T_feature_metadata
+      ),
+    `Lipidomics, Targeted | imputed | log  | TA` = list(
+      assay_name = "Lipidomics, Targeted | imputed | log  | TA",
+      assay_data = params$lipidomics_T_TA_log_data,
+      assay_sample_metadata = params$lipidomics_T_sample_metadata,
+      assay_feature_metadata = params$lipidomics_T_feature_metadata
+      )
+  ), function(a) {
+    # sample metadata
+    lip_T_sample_metadata <- read.csv(params$lipidomics_T_sample_metadata, row.names = 1)
+    lip_T_sample_metadata$Sample_Overview_names <- lumc_sample_metadata$Sample_Overview_names
+    rownames(lip_T_sample_metadata) <- lip_T_sample_metadata$Sample_Overview_names
+    # measurement data
+    my_assay = data.frame(t(read.csv(a$assay_data, row.names = 1)))
+    # Add universal sample names to lipidomics data
+    colnames(my_assay)  <-  gsub("\\.", "-", colnames(my_assay))
+    lip_T_sample_metadata <- lip_T_sample_metadata[ match(colnames(my_assay), lip_T_sample_metadata$Sample.name),]
+    colnames(my_assay) <- lip_T_sample_metadata$Sample_Overview_names
+    my_assay_list <- list(my_assay)
+    names(my_assay_list) <- c(a$assay_name)
+    
+    feature_metadata <- read.csv(a$assay_feature_metadata)
+    rownames(feature_metadata) <- feature_metadata$feature
+    
+    # SummarizedExperiment    
+    se <- SummarizedExperiment(
+      assays = my_assay_list,
+      # rows: features
+      rowData = feature_metadata, 
+      # columns: samples
+      colData = lip_T_sample_metadata, 
+      checkDimnames = TRUE)
+  })
+
+
+experiment_list <- append(experiment_list, lipidomics_targeted_experiments_list)
+```
+
+### Lipidomics data (Untargeted)
+
+```{r prepare_lipidomics_untargeted}
+
+# Sample metadata
+lip_UT_sample_metadata <- read.csv(params$lipidomics_UT_sample_metadata, row.names = 1)
+
+# Order based on Kevin nr. 
+lip_UT_sample_metadata$Sample_Overview_names <- lumc_sample_metadata[order(lumc_sample_metadata$Kevin.nr),]$Sample_Overview_names
+rownames(lip_UT_sample_metadata) <- lip_UT_sample_metadata$Sample_Overview_names
+
+# measurement data
+my_assay = data.frame(t(read.csv(params$lipidomics_UT_data, row.names = 1)))
+
+# Add universal sample names to lipidomics data
+colnames(my_assay)  <-  gsub("\\.", "-", colnames(my_assay))
+colnames(my_assay) <- lumc_sample_metadata[order(lumc_sample_metadata$Kevin.nr),]$Sample_Overview_names
+
+
+# Feature metadata
+feature_metadata <- read.csv(params$lipidomics_UT_feature_metadata, row.names = 1)
+rownames(feature_metadata) <- feature_metadata$my_id
+
+## Add lipidomics without outlier sample IPS22-00151-009
+my_assay <- my_assay
+my_assay$IPS22_00151_1 <- NULL
+lip_UT_sample_metadata <- lip_UT_sample_metadata[-c(9), ]
+
+my_assay_list <- list(my_assay)
+
+# SummarizedExperiment    
+se <- SummarizedExperiment(
+    assays = my_assay_list,
+    # rows: features
+    rowData = feature_metadata, 
+    # columns: samples
+    colData = lip_UT_sample_metadata, 
+    checkDimnames = TRUE)
+
+experiment_list <- append(experiment_list, (list(`Lipidomics, Untargeted` = se)))
+
+
+
+
+## Function to select to fat
+select_top_sd_cols <- function(x, n = 250) {
+  std_devs <- sapply(x, sd)
+  top_columns <- names(sort(std_devs, decreasing = TRUE)[1:n])
+  df_sub <-  x[,top_columns]
+  return(df_sub)
+}
+
+## Select subset of most variable lipids
+lipidomics <- data.frame(t(my_assay))
+lipidomics_sub <- select_top_sd_cols(lipidomics)
+
+## Feature metadata
+feature_metadata_sub <- feature_metadata[colnames(lipidomics_sub),]
+
+my_assay_list <- list(data.frame(t(lipidomics_sub)))
+
+# SummarizedExperiment    
+se <- SummarizedExperiment(
+    assays = my_assay_list,
+    # rows: features
+    rowData = feature_metadata_sub, 
+    # columns: samples
+    colData = lip_UT_sample_metadata, 
+    checkDimnames = TRUE)
+
+experiment_list <- append(experiment_list, (list(`Lipidomics, Untargeted | Variable` = se)))
+
+
+
+
+
+## Unfiltered (old) Lipidomics data
+# Sample metadata
+lip_UT_sample_metadata <- read.csv(params$lipidomics_UT_sample_metadata_filtered, row.names = 1)
+
+# Order based on Kevin nr. 
+lip_UT_sample_metadata$Sample_Overview_names <- lumc_sample_metadata[order(lumc_sample_metadata$Kevin.nr),]$Sample_Overview_names
+rownames(lip_UT_sample_metadata) <- lip_UT_sample_metadata$Sample_Overview_names
+
+# measurement data
+my_assay = data.frame(t(read.csv(params$lipidomics_UT_data_filtered, row.names = 1)))
+
+# Add universal sample names to lipidomics data
+colnames(my_assay)  <-  gsub("\\.", "-", colnames(my_assay))
+colnames(my_assay) <- lumc_sample_metadata[order(lumc_sample_metadata$Kevin.nr),]$Sample_Overview_names
+
+# Feature metadata
+feature_metadata <- read.csv(params$lipidomics_UT_feature_metadata_filtered, row.names = 1)
+rownames(feature_metadata) <- feature_metadata$FeatureID
+
+# Remove outlier sample IPS22-00151-009
+#my_assay <- my_assay
+my_assay$IPS22_00151_1 <- NULL
+lip_UT_sample_metadata <- lip_UT_sample_metadata[-c(9), ]
+
+my_assay_list <- list(my_assay)
+
+# SummarizedExperiment    
+se <- SummarizedExperiment(
+    assays = my_assay_list,
+    # rows: features
+    rowData = feature_metadata, 
+    # columns: samples
+    colData = lip_UT_sample_metadata, 
+    checkDimnames = TRUE)
+
+experiment_list <- append(experiment_list, (list(`Lipidomics, Untargeted | filtered` = se)))
+
+```
+
+
+
+
+### Transcriptomics data and metadata
+
+#### Sample names matching
+```{r}
+isa_assay_rna <- readxl::read_excel(params$isa_files, sheet = 'Assay - transcriptomics')
+
+## Read RNAseq data 
+my_assay = data.frame(t(read.csv(params$mRNAseq_data_cpm, row.names = 1)))
+
+source('createMAE_functions/match_rna_names')
+universal_names_rna <- match_rna_names(colnames(my_assay), isa_assay_rna = isa_assay_rna)
+```
+
+#### Match to samples overview data frame
+```{r}
+match_order_tml <- lapply(sample_names_overview$Mtblmcs_TML, function(x) {
+     if (x %in% universal_names_rna) {
+         x
+     }
+     else {
+         x <- NA
+     }
+     x
+ })
+
+sample_names_overview$RNAseq <- as.character(match_order_tml)
+sample_names_overview
+```
+
+
+```{r}
+transcriptomics_targeted_experiments_list <-  lapply(list(
+    `RNAseq | Deseq` = list(
+      assay_name = "RNAseq | Deseq",
+      assay_data = params$mRNAseq_data_deseq,
+      #assay_sample_metadata =
+      assay_feature_metadata = params$mRNAseq_feature_metadata
+    )
+    # `RNAseq | CPM` = list(
+    #   assay_name = "RNAseq | RTC",
+    #   assay_data = params$mRNAseq_data_rtc_vst,
+    #   #assay_sample_metadata =
+    #   assay_feature_metadata = params$mRNAseq_feature_metadata
+    #   )
+  ), function(a) {
+    # measurement data
+    my_assay = data.frame(t(read.csv(a$assay_data, row.names = 1)))
+    universal_names_rna_x <- match_rna_names(colnames(my_assay), isa_assay_rna = isa_assay_rna)
+    colnames(my_assay) <- universal_names_rna_x
+    my_assay_list <- list(my_assay)
+    
+    # feature metadata
+    feature_metadata <- read.csv(a$assay_feature_metadata, row.names=1)
+    
+    # SummarizedExperiment    
+    se <- SummarizedExperiment(
+      assays = my_assay_list,
+      # rows: features
+      #rowData = feature_metadata, 
+      # columns: samples
+      #colData = , 
+      checkDimnames = TRUE)
+  })
+
+
+experiment_list <- append(experiment_list, transcriptomics_targeted_experiments_list)
+```
+
+## RNAseq RTC data
+```{r}
+transcriptomics_targeted_experiments_list1 <-  lapply(list(
+    `RNAseq | RTC` = list(
+      assay_name = "RNAseq | RTC",
+      assay_data = params$mRNAseq_data_rtc_vst,
+      #assay_sample_metadata =
+      assay_feature_metadata = params$mRNAseq_feature_metadata_rt
+      )
+  ), function(a) {
+    # measurement data
+    my_assay = data.frame(t(read.csv(a$assay_data, row.names = 1)))
+    universal_names_rna_x <- match_rna_names(colnames(my_assay), isa_assay_rna = isa_assay_rna)
+    colnames(my_assay) <- universal_names_rna_x
+    my_assay_list <- list(counts = as.matrix(my_assay))
+    
+    # feature metadata
+    feature_metadata <- read.csv(a$assay_feature_metadata)
+    rownames(feature_metadata) <- make.unique(feature_metadata$feature)
+    
+    
+    # SummarizedExperiment    
+    se <- SummarizedExperiment(
+      assays = my_assay_list,
+      # rows: features
+      rowData = feature_metadata, 
+      # columns: samples
+      #colData = , 
+      checkDimnames = TRUE
+      )
+  })
+
+
+experiment_list <- append(experiment_list, transcriptomics_targeted_experiments_list1)
+```
+
+
+
+### Epigenomics data and metadata
+```{r}
+source('support_functions/ReadMethrix2Df.R')
+
+## Feature metadata variable set
+meth <- readRDS(params$EMseq_filt_sd)
+meth_sd <- read_meth2df_OLD(meth, isa_assay_prot)
+beta_values_sd <- meth_sd[[1]]
+feature_metadata_sd <- meth_sd[[2]]
+
+## Map CpGs to genes (from mapping table)
+emseq_mapping <- read.csv(params$EMseq_mapping_table, row.names=1) 
+gene_symbols <- emseq_mapping$Gene_symbol[match(rownames(feature_metadata_sd), emseq_mapping$feature) ]
+feature_metadata_sd$Gene_symbol <- as.character(gene_symbols)
+feature_metadata_sd$Gene_symbol[feature_metadata_sd$Gene_symbol == 'character(0)'] <- NA
+
+## Feature metadata random set
+meth <- readRDS(params$EMseq_filt_rand)
+meth_rand <- read_meth2df_OLD(meth, isa_assay_prot)
+beta_values_rand <- meth_rand[[1]]
+feature_metadata_rand <- meth_rand[[2]]
+
+
+## Append to MAE
+assay_list <- list( `EMseq | 100,000 most variable CpG sites` = beta_values_sd )
+
+EMseq_experiments <- list()
+EMseq_experiments$`EMseq | 100,000 most variable CpG sites`<- SummarizedExperiment(
+  assays = assay_list,
+  rowData = feature_metadata_sd,
+  checkDimnames = TRUE
+)
+
+experiment_list <- append(experiment_list, EMseq_experiments)
+
+
+## Append random selection to MAE
+assay_list <- list(  `EMseq | 100,000 random CpG sites` = beta_values_rand)
+
+EMseq_experiments2 <- list()
+EMseq_experiments2$`EMseq | 100,000 random CpG sites`<- SummarizedExperiment(
+  assays = assay_list,
+  rowData = feature_metadata_rand,
+  checkDimnames = TRUE
+)
+
+experiment_list <- append(experiment_list, EMseq_experiments2)
+```
+
+
+## EMseq M-value data
+```{r}
+read_meth2df_M <- function(meth, isa_assay) {
+  
+  ## Measurement data
+  beta_values_df <- as.data.frame(meth)
+  
+  ## Re-format sample names
+  new_samples_names <- gsub( "WI-3791-", "", colnames(beta_values_df))
+  new_samples_names <- gsub( "Epigenomics", "Proteomics", new_samples_names)
+  new_samples_names <- gsub( "_1_val_1_bismark_bt2_pe", "", new_samples_names)
+  new_samples_names <- gsub( "-", "_", new_samples_names)
+  
+  ## Get universal names by mapping to ISA file
+  isa_assay <- isa_assay[!duplicated(isa_assay$`assay identifier2`),]
+  universal_names_meth <- lapply(new_samples_names, function(x) {
+    name_uni <- isa_assay[isa_assay$`assay identifier2` == x, "sample identifier"]
+    bio_rep <- isa_assay[isa_assay$`assay identifier2` == x, "biological replicate"]
+    name_uni <- paste0(name_uni, "_", bio_rep)
+    name_uni
+  })
+  beta_values_df <- data.frame(beta_values_df)
+  colnames(beta_values_df) <- as.character(universal_names_meth)
+  colnames(beta_values_df) <- gsub( "-", "_", colnames(beta_values_df))
+  colnames(beta_values_df) <- gsub( "409B", "X409B", colnames(beta_values_df))
+  
+  return(beta_values_df) 
+}
+
+input_file <- 'Z:/data/iPSC_data/iPSC_MAE/meth_filt_sd_Mval.RDS'
+meth <- readRDS(input_file)
+meth_M <- read_meth2df_M(meth, isa_assay_prot)
+
+
+## Append random selection to MAE
+assay_list <- list(  `EMseq | 100,000 variable Mval` = meth_M)
+
+EMseq_experimentsM <- list()
+EMseq_experimentsM$`EMseq | 100,000 variable Mval` <- SummarizedExperiment(
+  assays = assay_list,
+  rowData = feature_metadata_sd,
+  checkDimnames = TRUE
+)
+
+experiment_list <- append(experiment_list, EMseq_experimentsM)
+```
+
+
+
+
+
+## Create MultiAssayExperiment
+
+The `SummarizedExperiment`s are now added to a `MultiAssayExperiment`. In addition to the `ExperimentList`, phenotype information on individuals is added (colData). General metadata about the cohort can be added here.
+
+```{r create_multiassayexperiment}
+mae <- MultiAssayExperiment(
+  experiments = experiment_list,
+  colData = pheno_df_replicates,
+  metadata = list(
+    description = "Multi-omics data of iNeurons"
+  )
+)
+mae
+```
+
+
+## Remove mixup sample
+```{r}
+sample_names <- rownames(colData(mae))
+sample_names_NoMixup <- sample_names[sample_names  != "IPS20_00123_3"]
+
+mae <- subsetByColData(mae, y = sample_names_NoMixup)
+mae
+
+```  
+
+Save MultiAssayExperiment to HDF5 file.
+
+```{r save_multiassayexperiment}
+saveHDF5MultiAssayExperiment(mae, dir = params$h5_outdir, replace = TRUE)
+```
+
+
+## Session information
+
+```{r session_info}
+sessionInfo()
+```
+
+## References

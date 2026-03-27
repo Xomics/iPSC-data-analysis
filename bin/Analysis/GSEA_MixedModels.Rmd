@@ -1,0 +1,444 @@
+---
+title: "Pathway enrichment enrichment analysis on Linear Mixed Models results"
+author:
+  - Casper de Visser^[Radboud university medical center, Casper.devisser@radboudumc.nl]
+output:
+  html_document:
+    df_print: paged
+params:
+    indir: Z:/data/iPSC_data/results/MixedModels/
+---
+
+
+## Directory of Mixed Model results
+```{r}
+MixedModels_dir <- params$indir
+```
+
+
+## R libraries
+```{r}
+library(openxlsx)
+library(dplyr)
+```
+
+
+## Load Mixed Models results
+```{r}
+dm1_rna <- openxlsx::read.xlsx(file.path(MixedModels_dir, 'DM1_P2_P3_MixedModel_Results.xlsx'), sheet = 'RNAseq')
+dm1_prot <- openxlsx::read.xlsx(file.path(MixedModels_dir, 'DM1_P2_P3_MixedModel_Results.xlsx'), sheet = 'Proteomics')
+
+nans_rna <- openxlsx::read.xlsx(file.path(MixedModels_dir, 'NANS_MixedModel_Results.xlsx'), sheet = 'RNAseq')
+nans_prt <- openxlsx::read.xlsx(file.path(MixedModels_dir, 'NANS_MixedModel_Results.xlsx'), sheet = 'Proteomics')
+
+chd2_rna <- openxlsx::read.xlsx(file.path(MixedModels_dir, 'CHD2_MixedModel_Results.xlsx'), sheet = 'RNAseq')
+chd2_prt <- openxlsx::read.xlsx(file.path(MixedModels_dir, 'CHD2_MixedModel_Results.xlsx'), sheet = 'Proteomics')
+```
+
+
+## Get pathways
+
+Pathways for different omics are loaded with `multiGSEA` [@Canzler2020].
+https://bioconductor.org/packages/release/bioc/vignettes/multiGSEA/inst/doc/multiGSEA.html
+
+```{r}
+library(multiGSEA)
+library(org.Hs.eg.db)
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+metabolomics_id_type <- "HMDB"
+proteomics_id_type <- "UNIPROT"
+transcriptomics_id_type <- "ENSEMBL"
+
+# get pathways
+pathways <- getMultiOmicsFeatures(
+  dbs = c('kegg', 'wikipathways', 'reactome' 
+          #'panther', 
+          #'pharmgkb',
+          
+          ),
+  #layer = omics_layers,
+  returnTranscriptome = transcriptomics_id_type,
+  returnProteome = proteomics_id_type,
+  returnMetabolome = metabolomics_id_type, 
+  organism = "hsapiens",
+  useLocal = F)
+
+# see first few pathways
+#lapply(1:length(pathways), function(l) { head(pathways[[l]], 1) })
+```
+
+
+## Create named lists of ranking metric
+```{r}
+get_ranks_vector <- function(df) {
+  # For duplicates, keep the row with the largest absolute t-value
+  df_unique <- df[order(df$feature, -abs(df$t.value)), ] |>
+    dplyr::distinct(feature, .keep_all = TRUE)
+  
+  ranks <- df_unique$t.value
+  names(ranks) <- df_unique$feature
+  return(ranks)
+}
+```
+
+
+```{r}
+RNAseq_ranks <- get_ranks_vector(dm1_rna)
+Proteomics_ranks <- get_ranks_vector(dm1_prot)
+
+NANS_RNAseq_ranks <- get_ranks_vector(nans_rna)
+NANS_Proteomics_ranks <- get_ranks_vector(nans_prt)
+
+CHD2_RNAseq_ranks <- get_ranks_vector(chd2_rna)
+CHD2_Proteomics_ranks <- get_ranks_vector(chd2_prt)
+
+```
+
+
+## Pathway enrichment analysis
+
+Perform pathway enrichment analysis per omics
+The function `multiGSEA::multiGSEA()` [@Canzler2020] which employs
+`fgsea::fgseaMultilevel()` [@Korotkevich2019] is modified to be able to change
+parameters of `fgsea::fgseaMultilevel()`.
+
+```{r, warning=FALSE}
+multiGSEA_new <- function(pathways, ranks, eps = 1e-100, scoreType = "std") {
+  # function modifed from multiGSEA::multiGSEA 
+  # Canzler, Sebastian and Hackermüller, Jörg: multiGSEA: A GSEA-based pathway 
+  # enrichment analysis for multi-omics data. BMC Bioinformatics 21, 561 (2020).
+  # https://doi.org/10.1186/s12859-020-03910-x
+  # allows to change parameters of fgsea::fgseaMultilevel because
+  # eps=0 (boundary to calculate p-value) can result in very long running times
+  # note that scoreType = "std" test both directions of ranked list
+  require(fgsea)
+
+  # Go through all omics layers
+  es <- lapply(names(pathways), function(omics) {
+      fgseaMultilevel(pathways = pathways[[omics]], stats = ranks, 
+                      eps = eps, scoreType = scoreType)
+  })
+
+  names(es) <- names(pathways)
+
+  return(es)
+}
+```
+
+
+## Perofrm GSEA per omics
+```{r}
+RNAseq_enrichments <- multiGSEA_new(pathways, RNAseq_ranks)
+Proteomics_enrichments <- multiGSEA_new(pathways, Proteomics_ranks)
+
+NANS_RNAseq_enrichments <- multiGSEA_new(pathways, NANS_RNAseq_ranks)
+NANS_Proteomics_enrichments <- multiGSEA_new(pathways, NANS_Proteomics_ranks)
+
+CHD2_RNAseq_enrichments <- multiGSEA_new(pathways, CHD2_RNAseq_ranks)
+CHD2_Proteomics_enrichments <- multiGSEA_new(pathways, CHD2_Proteomics_ranks)
+```
+
+
+## Function to write GSEA output to Excel
+```{r, warning=FALSE}
+write_filtered_excel <- function(data, file_path, patterns) {
+  wb <- createWorkbook()
+  
+  for (pattern in names(patterns)) {
+    sheet_name <- patterns[[pattern]]
+    subset_data <- data[startsWith(data[[1]], pattern), ]
+    
+    # Skip if no matching rows
+    if (nrow(subset_data) == 0) next
+    
+    addWorksheet(wb, sheet_name)
+    writeData(wb, sheet_name, subset_data)
+  }
+  
+  saveWorkbook(wb, file_path, overwrite = TRUE)
+}
+
+# Usage:
+patterns <- c(
+  "(REAC" = "REACT",
+  "(WIKI" = "WIKI",
+  "(KEGG" = "KEGG"
+)
+```
+
+
+## Get dataframes of significant pathways
+
+CHD2 vs Controls
+```{r}
+CHD2_Prot_Enrichments <- CHD2_Proteomics_enrichments[["proteome"]]
+CHD2_Prot_Enrichments_Signif <- CHD2_Prot_Enrichments[CHD2_Prot_Enrichments$padj < 0.05,]
+
+CHD2_RNA_Enrichments <- CHD2_RNAseq_enrichments[["transcriptome"]]
+CHD2_RNA_Enrichments_Signif <- CHD2_RNA_Enrichments[CHD2_RNA_Enrichments$padj < 0.05,]
+```
+
+NANS vs Controls
+```{r}
+NANS_Prot_Enrichments <- NANS_Proteomics_enrichments[["proteome"]]
+NANS_Prot_Enrichments_Signif <- NANS_Prot_Enrichments[NANS_Prot_Enrichments$padj < 0.05,]
+
+NANS_RNA_Enrichments <- NANS_RNAseq_enrichments[["transcriptome"]]
+NANS_RNA_Enrichments_Signif <- NANS_RNA_Enrichments[NANS_RNA_Enrichments$padj < 0.05,]
+```
+
+DM1 vs Controls
+```{r}
+DM1_Prot_Enrichments <- Proteomics_enrichments[["proteome"]]
+DM1_Prot_Enrichments_Signif <- DM1_Prot_Enrichments[DM1_Prot_Enrichments$padj < 0.05,]
+
+DM1_RNA_Enrichments <- RNAseq_enrichments[["transcriptome"]]
+DM1_RNA_Enrichments_Signif <- DM1_RNA_Enrichments[DM1_RNA_Enrichments$padj < 0.05,]
+```
+
+
+### Plot significantly enriched pathways per omics and component
+```{r}
+require(ggplot2)
+require(stringr)
+
+
+max_num_pathways <- 20
+
+
+prepare_sign_hits_df <- function(df) {
+  # extract significantly enriched pathways
+  df$rank <- -log10(df$pval)*abs(df$NES)
+  df.signif <- df[df$padj < 0.05, ]
+
+    
+  if (nrow(df.signif) > 0) {
+  # subset results for plotting if too many significant pathways
+  
+      # Remove pathways that share the same leading edge genes
+      df.signif <- df.signif[!duplicated((as.character(df.signif$leadingEdge))),]
+      
+      # Add column indicating negative or positive enrichment
+      df.signif$Enrichment <- NA
+      enrichment_col <- lapply(df.signif$NES, function(x){
+      if (x > 0) {
+         value <- 'Positively associated'
+      }
+      else {
+         value <- 'Negatively associated'
+      }
+      value
+      })
+      df.signif$Enrichment <- as.character(enrichment_col)
+      
+      if (nrow(df.signif) > max_num_pathways) {
+      # Make separate df for negative and positive enrichments
+        df.signif_pos <- df.signif[df.signif$NES > 0, ]
+        df.signif_neg <- df.signif[df.signif$NES < 0, ]
+        
+        # Order based on NES
+        df.signif_pos <- df.signif_pos[order(NES, decreasing = T),][1:5,]
+        df.signif_neg <- df.signif_neg[order(NES, decreasing = F),][1:5,]
+        
+        # Bind data frames
+        df.signif <- rbind(df.signif_pos, df.signif_neg)
+        df.signif <- na.omit(df.signif)
+      }
+      
+      # Add Gene ratio column
+      gene_ratios <- lapply(seq(1, length(df.signif$leadingEdge)), function(x) { 
+      leadingedge <- df.signif[x,8]
+      leadingedge_n <- length(leadingedge[[1]][[1]])
+      size <- df.signif[x,7]
+      gene_ratio <- as.numeric(leadingedge_n) / as.numeric(size) 
+      round(gene_ratio, digits = 3)
+      })
+      df.signif$GeneRatio <- as.numeric(as.character(gene_ratios))
+  
+
+      #order pathways by normalized enrichment score
+      df.signif$pathway <- factor(
+        stringr::str_wrap(df.signif$pathway, width = 50),
+        levels = stringr::str_wrap(df.signif$pathway, width = 50)[order(df.signif$NES)],
+        ordered = T)
+  return(df.signif)
+  }
+}
+  
+  
+df_signif_rna <- prepare_sign_hits_df(RNAseq_enrichments[["transcriptome"]])  
+df_signif_prot <- prepare_sign_hits_df(Proteomics_enrichments[["proteome"]])  
+
+NANS_df_signif_rna <- prepare_sign_hits_df(NANS_RNAseq_enrichments[["transcriptome"]])  
+NANS_df_signif_prot <- prepare_sign_hits_df(NANS_Proteomics_enrichments[["proteome"]])  
+
+CHD2_df_signif_rna <- prepare_sign_hits_df(CHD2_RNAseq_enrichments[["transcriptome"]])  
+CHD2_df_signif_prot <- prepare_sign_hits_df(CHD2_Proteomics_enrichments[["proteome"]])  
+```
+
+
+## Plot significant pathways
+```{r}
+plot_patwhays <- function(df.signif, title) {
+
+  # Plot NES
+  ggp <- ggplot(df.signif) +
+      geom_segment(aes(y = pathway, x = GeneRatio, xend = 0, yend = pathway)) +
+      geom_point(aes(y = pathway, x = GeneRatio, fill=padj, size = size), shape = 21) +
+      scale_fill_viridis_c() +
+      facet_grid(Enrichment ~ ., scales = "free", space = "free") +
+      ggtitle(title)
+      
+  return(ggp)
+}
+
+plot_patwhays(df_signif_prot, 'Proteomics (DM1)')
+plot_patwhays(df_signif_rna, 'RNAseq (DM1)')
+
+plot_patwhays(NANS_df_signif_prot, 'Proteomics (NANS-CDG)')
+plot_patwhays(NANS_df_signif_rna, 'RNAseq (NANS-CDG)')
+
+plot_patwhays(CHD2_df_signif_prot, 'Proteomics (CHD2)')
+plot_patwhays(CHD2_df_signif_rna, 'RNAseq (CHD2)')
+
+```
+
+
+
+## LeadingEdge genes, translate ENSEMBL to Gene Symbols (mRNA-seq)
+```{r}
+#proteomics_feature_metadata <- read.csv('C:/Users/Z896216/Documents/proteomics_feature_metadata.csv', row.names=1)
+#proteomics_feature_metadata$feature <- proteomics_feature_metadata$protein_accession
+
+translateLeadingEdgeGenes <- function(df, feature_metadata, col_nr) {
+  leadingEdge_col <- df$leadingEdge
+
+  leadingEdge_symb <- lapply(leadingEdge_col, function(x) {
+          
+      ## Remove "\n" that is present in some ENSEMBL IDs
+      x <- (gsub("\n", "", x))
+          
+      leading_genes <- x
+      symbols <- lapply(leading_genes, function(x) {
+        sym <- feature_metadata[feature_metadata$feature==x, col_nr] # Use result dataframe with gene symbols
+        sym <- (gsub("\n", "", sym))
+        sym
+      }) 
+      list(as.character(symbols))
+        
+      })
+  df$leadingEdge_Symbols <- as.character(leadingEdge_symb)
+  return(df)
+}
+
+
+DM1_RNA_Enrichments_Signif <- translateLeadingEdgeGenes(DM1_RNA_Enrichments_Signif, chd2_rna, 10)
+DM1_Prot_Enrichments_Signif <- translateLeadingEdgeGenes(DM1_Prot_Enrichments_Signif, chd2_prt, 11)
+
+NANS_RNA_Enrichments_Signif <- translateLeadingEdgeGenes(NANS_RNA_Enrichments_Signif, chd2_rna, 10)
+NANS_Prot_Enrichments_Signif <- translateLeadingEdgeGenes(NANS_Prot_Enrichments_Signif, chd2_prt, 11)
+
+CHD2_RNA_Enrichments_Signif <- translateLeadingEdgeGenes(CHD2_RNA_Enrichments_Signif, chd2_rna, 10)
+CHD2_Prot_Enrichments_Signif <- translateLeadingEdgeGenes(CHD2_Prot_Enrichments_Signif, chd2_prt, 11)
+```
+
+
+
+## Save to .csv
+```{r}
+library(openxlsx)
+
+out_dir <- 'C:/Users/Z896216/Documents/GSEA_MixedModels/'
+dir.create(out_dir)
+
+write_filtered_excel(CHD2_Prot_Enrichments_Signif, paste0(out_dir, 'CHD2_Proteomics.xlsx'), patterns)
+write_filtered_excel(CHD2_RNA_Enrichments_Signif, paste0(out_dir, 'CHD2_RNAseq.xlsx'), patterns)
+
+write_filtered_excel(DM1_RNA_Enrichments_Signif, paste0(out_dir, 'CHD2_RNAseq.xlsx'), patterns)
+write_filtered_excel(DM1_Prot_Enrichments_Signif, paste0(out_dir, 'DM1_Proteomics.xlsx'), patterns)
+
+write_filtered_excel(NANS_Prot_Enrichments_Signif, paste0(out_dir, 'NANS_Proteomics.xlsx'), patterns)
+write_filtered_excel(NANS_RNA_Enrichments_Signif, paste0(out_dir, 'NANS_RNAseq.xlsx'), patterns)
+```
+
+
+
+
+### Aggregate p-values across omics
+
+`MultiGSEA::combinePvalues()` aggregates p-values across all omics types.
+```{r}
+aggregated_pval <- lapply(components, function(comp) {
+  df <- extractPvalues(enrichmentScores = enrichment_scores[[comp]],
+                       pathwayNames = names(pathways[[1]])) # first omics
+
+  df$combined_pval <- combinePvalues(df)
+  df$combined_padj <- p.adjust(df$combined_pval, method = "BH")
+  
+  df <- cbind(data.frame(pathway = names(pathways[[1]])), df)
+  df
+})
+
+# top 10 pathways based on aggregated p-values 
+lapply(aggregated_pval, function(df) {
+  df[order(df$combined_pval), ][1:max_num_pathways, ] 
+})
+```
+
+
+# Find genes nearest to methylation sites
+```{r, warning=FALSE}
+library(dplyr)
+
+ensembl_genes <- read.csv('ensembl_genes.csv', row.names = 1)
+
+mofa_factor_sub <- read.csv('MOFA/factorweights_EM-seq___cell-type_adjusted___100_000_most_variable_CpG_sites.csv', row.names=1)
+
+
+mofa_factor_per_chromosome <- lapply(seq(1:22), function(x) {
+     sub <- mofa_factor_sub[mofa_factor_sub$chr==x,]
+ })
+
+genes_per_chromosome <- lapply(seq(1:22), function(x) {
+     df_sub <- ensembl_genes[ensembl_genes$chromosome_name==x,]
+ })
+
+
+mofa_factors_with_ensembl <- lapply(seq(1:22), function(x) {
+    genes <- genes_per_chromosome[[x]]
+    mofa_sub <- mofa_factor_per_chromosome[[x]]
+    
+    test <- lapply(mofa_sub$start, function(x) {
+      nearest_row <-which(abs(genes$start_pos - x) == min(abs(genes$start_pos - x)))
+      nearest_gene <- genes[nearest_row, 1]
+      #return(nearest_gene)
+    })
+    mofa_sub$ENSEMBL <- test
+    return(mofa_sub)
+})
+rm(ensembl_genes)
+rm(mofa_factor_sub)
+rm(genes_per_chromosome)
+rm(mofa_factor_per_chromosome)
+
+combined <- bind_rows(mofa_factors_with_ensembl)
+rm(mofa_factors_with_ensembl)
+combined <- combined[1:1000,] # Smaller set to test
+combined$Accession <- unlist(combined$ENSEMBL)
+combined$ENSEMBL <- combined$Accession
+
+input_data$`EM-seq` <- combined
+```
+
+
+## Session information
+
+```{r}
+sessionInfo()
+```
+
+
+## References

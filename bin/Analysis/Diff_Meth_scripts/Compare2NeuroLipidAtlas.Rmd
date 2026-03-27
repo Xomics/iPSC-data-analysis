@@ -1,0 +1,307 @@
+---
+title: "CompareNeuroLipidAtlas"
+output: html_document
+date: '2025-09-15'
+---
+
+
+## Read MOFA 2 Lipidomics (Targeted) weights
+```{r}
+dir_NeuroAtlas_downloads <- 'C:/Users/Z896216/OneDrive - Radboudumc/Old_laptop_files/NeuroLipidAtlas/'
+
+MOFa_Lipid_weights <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, "factorweights_Lipidomics__Targeted___imputed___log.xlsx"), rowNames = TRUE)
+```
+
+
+## Read CSV files of reference data sets
+```{r}
+LF_vanderKant <- read.csv(paste0(dir_NeuroAtlas_downloads, 'LF_neurons_van_der_Kant.csv'))
+LF_lipid_Isaacs_C9_ASO <- read.csv(paste0(dir_NeuroAtlas_downloads, 'LF_C9-knockdown_Isaacs_total_norm_data.csv'))
+LF_lipid_Isaacs_FAT <- read.csv(paste0(dir_NeuroAtlas_downloads, 'LF_FAT-1_2_3_Isaacs_total_norm_data.csv'))
+LF_lipid_Isaacs_LV_G4C2 <- read.csv(paste0(dir_NeuroAtlas_downloads, 'LF_Control_C9 repeat_Isaacs_total_norm_data.csv'))
+LF_lipid_Feringa_AD <- read.csv(paste0(dir_NeuroAtlas_downloads, 'LF_Feringa_AD_total_norm_data.csv'))
+LF_lipid_Feringa_Brain <- read.csv(paste0(dir_NeuroAtlas_downloads, 'LF_Feringa_Brain_total_norm_data.csv'))
+LF_lipid_Feringa_iPSC_Neuron <- read.csv(paste0(dir_NeuroAtlas_downloads, 'LF_Feringa_total_norm_data.csv'))
+LF_lipid_Isaacs_C9rep <- read.csv(paste0(dir_NeuroAtlas_downloads, 'LF_Isaacs_C9rep_total_norm_data.csv'))
+LF_lipid_Isaacs_FTLD <- read.csv(paste0(dir_NeuroAtlas_downloads, 'LF_Isaacs_FTLD_total_norm_data.csv'))
+LF_lipid_Ward_TMEM106B <- read.csv(paste0(dir_NeuroAtlas_downloads, 'LF_Ward_total_norm_data.csv'))
+
+
+Neuro_Lipids_Datasets <- list(
+  vanderKant = LF_vanderKant,
+  Feringa_AD = LF_lipid_Feringa_AD,
+  Feringa_Brain = LF_lipid_Feringa_Brain,
+  Feringa_iPSC_Neuron = LF_lipid_Feringa_iPSC_Neuron,
+  Isaacs_C9_ASO = LF_lipid_Isaacs_C9_ASO,
+  Isaacs_FAT = LF_lipid_Isaacs_FAT,
+  Isaacs_FTLD = LF_lipid_Isaacs_FTLD,
+  Isaacs_LV_G4C2 = LF_lipid_Isaacs_LV_G4C2,
+  Isaacs_C9rep = LF_lipid_Isaacs_C9rep,
+  Ward_TMEM106B = LF_lipid_Ward_TMEM106B
+)
+```
+
+
+```{r}
+# Function to convert custom lipid IDs to LipidMaps style
+convert_to_lipidmaps <- function(lipids) {
+  sapply(lipids, function(x) {
+    # Handle triacylglycerols TG.*
+    if (grepl("^TG\\.", x)) {
+      # TG.56.6.FA22.6 -> TG.56:6-FA22:6
+      x <- sub("TG\\.(\\d+)\\.(\\d+)\\.FA(\\d+)\\.(\\d+)", "TG.\\1:\\2-FA\\3:\\4", x)
+    }
+    # Handle plasmalogens PE.P.*
+    else if (grepl("^PE\\.P\\.", x)) {
+      # PE.P.16.0.16.0 -> PE.P-16:0/16:0
+      x <- sub("PE\\.P\\.(\\d+)\\.(\\d+)\\.(\\d+)\\.(\\d+)", "PE.P-\\1:\\2/\\3:\\4", x)
+    }
+    # Handle diacyl lipids like PC.*, PE.*, PA.*, PS.*, PI.*, etc.
+    else if (grepl("^[A-Z]{2,3}\\.", x)) {
+      x <- gsub("\\.", ":", x)   # simple dot to colon for single-chain lipids
+      x <- gsub("_", "/", x)     # replace underscore with slash
+    }
+    # Return the converted lipid
+    return(x)
+  }, USE.NAMES = FALSE)
+}
+
+
+# apply to your list
+harmonized <- convert_to_lipidmaps(rownames(MOFa_Lipid_weights))
+
+match(harmonized, LF_lipid_Feringa_AD$lipid)
+```
+
+
+
+```{r}
+## Function to compare MOFA ranking (e.g. log fold changes, p-values, or another score) with the rankings in the external datasets.
+cor_lipid_datasets <- function(MOFA_df, Factor, Ref_DF) {
+  
+  ## Unify lipid IDs
+  rownames(MOFA_df) <- convert_to_lipidmaps(rownames(MOFA_df))
+
+  
+  # Ranked list based on MOFA loadings
+  ranked_mofa_lipids <- rownames(MOFA_df[order(MOFA_df[,Factor], decreasing = T),])
+  
+  
+  # Ranked list of reference datasets
+  ranked_ref_lipids <- Ref_DF[order(Ref_DF$log2FC, decreasing = T), "lipid"]
+  
+  names(ranked_mofa_lipids) <- ranked_mofa_lipids
+  names(ranked_ref_lipids) <- ranked_ref_lipids
+
+  # Get only common lipids
+  common <- intersect(names(ranked_mofa_lipids), names(ranked_ref_lipids))
+  
+  # Extract ranks, preserving each dataset's original order
+  mofa_ranks <- rank(match(common, names(ranked_mofa_lipids)))
+  ref_ranks  <- rank(match(common, names(ranked_ref_lipids)))
+  
+  # Spearman correlation
+  cor.test(mofa_ranks, ref_ranks, method = "spearman")
+
+}
+
+
+cor_lipid_datasets_list <- function(MOFA_df, Factor, ref_list) {
+  
+  # Unify lipid IDs
+  rownames(MOFA_df) <- convert_to_lipidmaps(rownames(MOFA_df))
+  
+  # Sort MOFA by the factor of interest
+  ranked_mofa_lipids <- rownames(MOFA_df[order(MOFA_df[, Factor], decreasing = TRUE), ])
+  
+  # Initialize results dataframe
+  results <- data.frame(
+    Ref_Dataset = character(),
+    Spearman_rho = numeric(),
+    p_value = numeric(),
+    n_overlap = integer(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Loop over reference datasets
+  for (i in seq_along(ref_list)) {
+    ref_df <- ref_list[[i]]
+    
+    # Sort reference dataset by log2FC
+    ranked_ref_lipids <- ref_df$lipid[order(ref_df$log2FC, decreasing = TRUE)]
+    
+    # Find common lipids
+    common <- intersect(ranked_mofa_lipids, ranked_ref_lipids)
+    if(length(common) == 0) next
+    
+    # Get ranks in each dataset, **preserving their own order**
+    mofa_ranks <- rank(match(common, ranked_mofa_lipids))
+    ref_ranks  <- rank(match(common, ranked_ref_lipids))
+    
+    # Spearman correlation
+    cor_res <- cor.test(mofa_ranks, ref_ranks, method = "spearman")
+    
+    # Store results
+    # Store results
+    results <- rbind(results, data.frame(
+      Ref_Dataset = names(ref_list)[i],
+      Spearman_rho = cor_res$estimate,
+      p_value = cor_res$p.value,
+      n_overlap = length(common)
+    ))
+  }
+  
+  return(results)
+}
+
+
+
+library(fgsea)
+
+gsea_lipid_datasets_list <- function(MOFA_df, Factor, ref_list, top_n = 50) {
+  
+  # Unify lipid IDs
+  rownames(MOFA_df) <- convert_to_lipidmaps(rownames(MOFA_df))
+  
+  # Rank MOFA lipids by the factor of interest
+  mofa_scores <- MOFA_df[, Factor]
+  names(mofa_scores) <- rownames(MOFA_df)
+  mofa_scores <- sort(mofa_scores, decreasing = TRUE)
+  
+  # Define gene set: top N MOFA lipids
+  my_set <- list(MOFA_top = names(mofa_scores)[1:top_n])
+  
+  # Initialize results dataframe
+  results <- data.frame(
+    Ref_Dataset = character(),
+    ES = numeric(),
+    NES = numeric(),
+    p_value = numeric(),
+    #padj = numeric(),
+    n_overlap = integer(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Loop over reference datasets
+  for (i in seq_along(ref_list)) {
+    ref_df <- ref_list[[i]]
+    
+    # Make a named vector of log2FC values (ranked list for fgsea)
+    ext_ranks <- ref_df$log2FC
+    names(ext_ranks) <- convert_to_lipidmaps(ref_df$lipid)
+    ext_ranks <- sort(ext_ranks, decreasing = TRUE)
+    
+    # Restrict to common lipids
+    common <- intersect(names(ext_ranks), unlist(my_set))
+    if (length(common) == 0) next
+    
+    # Run fgsea (multilevel by default)
+    fgseaRes <- fgseaMultilevel(pathways = my_set, stats = ext_ranks)
+    
+    # Store results
+    results <- rbind(results, data.frame(
+      Ref_Dataset = names(ref_list)[i],
+      ES = fgseaRes$ES,
+      NES = fgseaRes$NES,
+      p_value = fgseaRes$pval,
+      #padj = fgseaRes$padj,
+      n_overlap = length(common)
+    ))
+  }
+  
+  return(results)
+}
+
+
+
+```
+
+
+# Spearman correlations
+
+## Factor 1
+```{r}
+results_Factor1 <- cor_lipid_datasets_list(MOFA_df = MOFa_Lipid_weights, Neuro_Lipids_Datasets, Factor = 'Factor1')
+results_Factor1$p.adj <- p.adjust(results_Factor1$p_value, method = 'BH')
+```
+
+## Factor 2
+```{r}
+results_Factor2 <- cor_lipid_datasets_list(MOFA_df = MOFa_Lipid_weights, Neuro_Lipids_Datasets, Factor = 'Factor2')
+results_Factor2$p.adj <- p.adjust(results_Factor2$p_value, method = 'BH')
+```
+
+
+
+# Gene set enrichment
+
+# Factor 1
+```{r}
+gsea_results_Factor1 <- gsea_lipid_datasets_list(MOFA_df = MOFa_Lipid_weights, Neuro_Lipids_Datasets, Factor = 'Factor1')
+gsea_results_Factor1$p.adj <- p.adjust(gsea_results_Factor1$p_value, method = 'BH')
+```
+
+## Factor 2
+```{r}
+gsea_results_Factor2 <- gsea_lipid_datasets_list(MOFA_df = MOFa_Lipid_weights, Neuro_Lipids_Datasets, Factor = 'Factor1')
+gsea_results_Factor2$p.adj <- p.adjust(gsea_results_Factor2$p_value, method = 'BH')
+```
+
+
+## Fisher's exact test on lipid classes
+```{r}
+compare_class_composition <- function(MOFA_scores,
+                                      refs,
+                                      stat_col = "log2FC",
+                                      top_n = 50,
+                                      adjust_method = "BH") {
+  get_class <- function(x) sub("\\..*", "", x)
+  
+  # MOFA top_n classes
+  top_lipids <- rownames(MOFA_scores[order(MOFA_scores$Factor1, decreasing = TRUE),])[1:top_n]
+  top_mofa_classes <- get_class(top_lipids)
+  
+  results <- list()
+  
+  for (ref_name in names(refs)) {
+    ref_df <- refs[[ref_name]]
+    top_ref <- ref_df$lipid[order(ref_df[[stat_col]], decreasing = TRUE)][1:top_n]
+    top_ref_classes <- get_class(top_ref)
+    
+    # contingency table
+    tbl <- table(
+      Dataset = c(rep("MOFA", length(top_mofa_classes)),
+                  rep("Ref",  length(top_ref_classes))),
+      Class = c(top_mofa_classes, top_ref_classes)
+    )
+    
+    # Fisher exact test (global)
+    ft <- fisher.test(tbl, simulate.p.value = TRUE)  # simulate if large
+    results[[ref_name]] <- data.frame(
+      ref = ref_name,
+      pval = ft$p.value,
+      n_mofa = length(top_mofa),
+      n_ref = length(top_ref),
+      overlap_classes = length(intersect(unique(top_mofa_classes),
+                                         unique(top_ref_classes)))
+    )
+  }
+  
+  results_df <- do.call(rbind, results)
+  results_df$padj <- p.adjust(results_df$pval, method = adjust_method)
+  rownames(results_df) <- NULL
+  return(results_df)
+}
+
+
+
+
+
+results_df <- compare_class_composition(MOFa_Lipid_weights, Neuro_Lipids_Datasets)
+results_filtered <- results_df[is.finite(results_df$OR) & results_df$OR > 0, ]
+
+```
+
+
+
+

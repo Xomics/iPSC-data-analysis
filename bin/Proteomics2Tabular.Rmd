@@ -1,0 +1,383 @@
+---
+title: "Proteomics2Tabular"
+output: html_document
+params:
+  proteomics_data: Z:/data/iPSC_data/iPSC_proteomics/PTX471b_EATRIS_iPSC_DIA/_DIANN_results/DIA-MBR_iPSC_20231110_results.pg_matrix.tsv
+  #proteomics_data_spectro: Z:/data/iPSC_data/iPSC_proteomics/PTX471b_EATRIS_iPSC_DIA_Spectronaut/iPSC_Xomics_spectronaut_20241104.xlsx
+  proteomics_data_spectro: 'Z:/data/iPSC_data/iPSC_proteomics/DIA_Spectronaut_Complete/summary-results.proteinpgquantity (1).parquet'
+  
+  outdir: Z:/data/iPSC_data/iPSC_MAE
+---
+
+# Read processed proteomics data and save to tabular formats for the MultiAssayExperiment
+
+```{r}
+library(dplyr)
+```
+
+## Script parameters
+
+```{r}
+print(Sys.Date())
+print(params)
+```
+
+## Read DIANN data (TSV)
+
+```{r}
+proteomics <- read.delim(params$proteomics_data)
+print(colnames(proteomics))
+```
+
+## Feature metadata (DIANN)
+
+```{r }
+feature_headers <- colnames(proteomics)[1:5]
+feature_metadata <- proteomics[, feature_headers]
+head(feature_metadata)
+```
+
+## Measurement data (DIANN)
+
+```{r }
+measurement_data <- proteomics[, !names(proteomics) %in% feature_headers]
+
+# Protein IDs as rownames
+rownames(measurement_data) <- feature_metadata$Protein.Ids
+
+#transpose matrix
+measurement_data <- data.frame(t(measurement_data))
+  
+# Add a new column to indicate sample categories
+# The categories have been extracted from the rownames, as the first word before row names
+# NANS_p3c1_Proteomics_2_S2_A11_1 is NANS
+sampleType <- sub("^(.*?)_.*","\\1", rownames(measurement_data))
+measurement_data$group <- sampleType
+```
+
+
+## Read Spectronaut Matrix (.xlsx)
+
+```{r}
+#proteomics_sp <- readxl::read_xlsx(params$proteomics_data_spectro)
+proteomics_sp <- arrow::read_parquet(params$proteomics_data_spectro)
+print(colnames(proteomics_sp))
+```
+
+## Feature metadata (Spectronaut)
+
+```{r }
+feature_headers <- colnames(proteomics_sp)[1:5]
+feature_metadata_sp <- proteomics_sp[, feature_headers]
+```
+
+## Measurement data (Spectronaut)
+
+```{r }
+measurement_data_sp <- proteomics_sp[, !names(proteomics_sp) %in% feature_headers]
+
+# Protein IDs as rownames
+rownames(measurement_data_sp) <- feature_metadata_sp$protein_accession
+
+#transpose matrix
+measurement_data_sp <- data.frame(t(measurement_data_sp))
+  
+# Add a new column to indicate sample categories
+# The categories have been extracted from the rownames, as the first word before row names
+# NANS_p3c1_Proteomics_2_S2_A11_1 is NANS
+sampleType <- sub("^(.*?)_.*","\\1", rownames(measurement_data_sp))
+measurement_data_sp$group <- sampleType
+head(measurement_data_sp)
+```
+
+
+# Data pre-processing
+
+## Remove features with more than 20% missingness
+
+```{r}
+## Function to remove feature with more than 20% missing
+##
+##
+filter_na_columns <- function(data, threshold = 0.2) {
+  
+  # calculate NA values per column
+  na_proportion <- colSums(is.na(data)) / nrow(data)
+  # Filter out columns about threshold
+  data %>% select(which(na_proportion <= threshold))
+  
+}
+
+
+## Function to remove feature with more than 20% missing, in each pheno group
+##
+##
+filter_na_groupwise <- function(data, threshold = 0.2) {
+  
+  group_col <- 'group'
+  # Groups by pheno groups and calculate NA percentages per peptide
+  missingness <- data %>%
+    group_by(across(all_of(group_col))) %>%
+    summarise(across(everything(), ~ mean(is.na(.)), .names = "missing_{col}")) %>%
+    summarise(across(starts_with("missing_"), max))
+    
+  cols_keep <- names(missingness)[missingness <= 0.2]
+  cols_keep <- gsub("missing_", "", cols_keep)
+    
+  df_clean <- data %>%
+    select(all_of(c(cols_keep, group_col)))
+    
+  return(df_clean)
+}
+```
+
+
+### Filter features in DIANN data
+```{r}
+measurement_filtered <- filter_na_columns(measurement_data)
+#measurement_filtered<- filter_na_groupwise(measurement_data)
+dim(measurement_filtered)
+
+# Remove these features from feature metadata table
+feature_metadata <- feature_metadata[feature_metadata$Protein.Ids %in% colnames(measurement_filtered),]
+
+# Convert NA to 0
+measurement_filtered_NA <- measurement_filtered
+measurement_filtered[is.na(measurement_filtered)] <- 0
+```
+
+
+
+### Get list of proteins with complete measuremetns
+```{r}
+measurement_data_sp_noNA <- measurement_data_sp[ , colSums(is.na(measurement_data_sp)) == 0]
+#write.csv(measurement_data_sp_noNA, file =  file.path(params$outdir, 'proteomics_data_noNA.csv'), row.names = F)
+```
+
+
+
+### Filter features in Spectronaut data
+```{r}
+measurement_filtered_sp <- filter_na_columns(measurement_data_sp)
+#measurement_filtered_sp <- filter_na_groupwise(measurement_data_sp)
+dim(measurement_filtered_sp)
+
+# Remove these features from feature metadata table
+feature_metadata_sp <- feature_metadata_sp[feature_metadata_sp$protein_accession %in% colnames(measurement_filtered_sp),]
+
+# Convert NA to 0
+measurement_filtered_sp_NA <- measurement_filtered_sp
+measurement_filtered_sp[is.na(measurement_filtered_sp)] <- 0
+```
+
+## Visualize missingness in data
+
+```{r}
+source("support_functions/heatmap_missingness.R")
+heatmap_missing(measurement_data, 'Proteomics')
+heatmap_missing(measurement_filtered_NA, 'Proteomics , Filter 20% NA columns')
+heatmap_missing(measurement_data_sp, 'Proteomics SP')
+heatmap_missing(measurement_filtered_sp_NA, 'Proteomics SP , Filter 20% NA columns')
+```
+
+
+## Replace zero's by half of the minimum value
+```{r}
+### Make columns numericals
+measurement_filtered[] <- lapply(measurement_filtered, as.numeric)
+measurement_filtered_sp[] <- lapply(measurement_filtered_sp, as.numeric)
+
+## Replace zero's by half of minimum
+proteomics_noZero <- measurement_filtered %>% mutate(across(everything(), ~if_else(. == 0, min(.[. != 0])/2, .)))
+proteomics_sp_noZero <- measurement_filtered_sp %>% mutate(across(everything(), ~if_else(. == 0, min(.[. != 0])/2, .)))
+```
+
+
+## Log-transform data
+```{r}
+## DIANN
+proteomics_noZero_log <- log2(proteomics_noZero)
+
+## Spectronaut
+proteomics_sp_noZero_log <- log2(proteomics_sp_noZero)
+```
+
+
+
+# Merge technical replicates
+
+## Add Sample IDs column
+```{r}
+# Add column wich indiciates bio replicate
+sampleIDs_temp <- strsplit(rownames(proteomics_noZero_log),"_Proteomics_")
+sample_IDs <- lapply(sampleIDs_temp, function(x) {
+    sample_name <- x[[1]]
+    sample_No <- x[[2]]
+    sample_No <- strsplit(sample_No, "_")[[1]][[1]]
+    sample_name <- paste0(sample_name, "_Proteomics_", sample_No)
+    sample_name
+    
+})
+# Add as column 
+proteomics_noZero_log$Sample_ID <- as.character(sample_IDs)
+```
+
+
+## Add Sample IDs column (Spectronaut)
+```{r}
+# Add column wich indiciates bio replicate
+sampleIDs_temp <- strsplit(rownames(proteomics_sp_noZero_log),"_Proteomics_")
+sample_IDs_sp <- lapply(sampleIDs_temp, function(x) {
+    sample_name <- x[[1]]
+    sample_No <- x[[2]]
+    sample_No <- strsplit(sample_No, "_")[[1]][[1]]
+    sample_name <- paste0(sample_name, "_Proteomics_", sample_No)
+    sample_name
+    
+})
+# Add as column 
+proteomics_sp_noZero_log$Sample_ID <- as.character(sample_IDs_sp)
+```
+
+
+## Scatter plot of good examples
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(stats)
+
+
+## Function to plot
+scatter_plot_cor <- function(df, col='pink', x_axis, y_axis, title =  "Scatter plot") {
+  
+  ggp <- ggscatter(df, 
+          x = colnames(df)[[1]], 
+          y = colnames(df)[[2]],
+          color = col,
+          add = 'reg.line',
+          add.params = list(color = "blue")) +
+    labs(title = title,
+         x = paste0(x_axis, " protein levels"), 
+         y = paste0(y_axis, " protein levels"), ) +
+    theme(axis.title.x =  element_text(size = 14),
+          axis.title.y =  element_text(size = 14)) +
+    stat_cor(aes(label = ..rr.label..), method = "pearson")
+  
+  return(ggp)
+}
+
+## Function to get data frame and use the plotting function above
+make_scatter_plot_cor <- function(df, title, id_list) {
+  df$Sample_ID <- as.character(id_list)
+  scatter_plot_df <- df[df$Sample_ID == 'WTC_Proteomics_3',]
+  scatter_plot_df <- data.frame(t(scatter_plot_df))
+  scatter_plot_df[,1] <- as.numeric(scatter_plot_df[,1])
+  scatter_plot_df[,2] <- as.numeric(scatter_plot_df[,2])
+  ggp <- scatter_plot_cor(scatter_plot_df, 'dodgerblue1', 'Tech. rep 1', 'Tech. rep 2', title=title)
+  return(ggp)  
+  
+}
+
+## Function to get data frame and use the plotting function above
+make_scatter_plot_cor_cell_line <- function(df, title, id_list) {
+  df$Sample_ID <- as.character(id_list)
+  scatter_plot_df <- df[df$Sample_ID == 'WTC_Proteomics_1' | df$Sample_ID == 'WTC_Proteomics_2',]
+  scatter_plot_df <- scatter_plot_df[!duplicated(scatter_plot_df$Sample_ID),]
+  scatter_plot_df <- data.frame(t(scatter_plot_df))
+  scatter_plot_df[,1] <- as.numeric(scatter_plot_df[,1])
+  scatter_plot_df[,2] <- as.numeric(scatter_plot_df[,2])
+  ggp <- scatter_plot_cor(scatter_plot_df, 'dodgerblue1', 'WTC line bio rep 1', 'WTC line bio rep 2', title=title)
+  return(ggp)  
+  
+}
+```
+
+## Compare tech reps of DIANN and Spectronaut
+```{r}
+make_scatter_plot_cor(proteomics_sp_noZero_log, 'Log-transformation, Spectronaut', sample_IDs_sp)
+make_scatter_plot_cor(proteomics_noZero_log, 'Log-transformation, DIANN', sample_IDs)
+```
+
+## Merge technical replicates by taking median
+
+```{r}
+proteomics_noZero_log_merged <- proteomics_noZero_log %>%
+  group_by(Sample_ID)  %>%
+  summarize(across(everything(), mean))
+
+proteomics_sp_noZero_log_merged <- proteomics_sp_noZero_log %>%
+  group_by(Sample_ID)  %>%
+  summarize(across(everything(), mean))
+```
+
+### Sample names DIANN
+```{r}
+proteomics_noZero_log_merged$Sample_ID <- gsub('X', '', proteomics_noZero_log_merged$Sample_ID)
+proteomics_noZero_log_merged$Sample_ID
+```
+
+## Sample names Spectronaut
+```{r}
+proteomics_sp_noZero_log_merged$Sample_ID <- gsub('X', '', proteomics_sp_noZero_log_merged$Sample_ID)
+proteomics_sp_noZero_log_merged$Sample_ID
+```
+
+# Select only proteins with complete measurements for technical replicates
+```{r}
+proteomics_sp_noZero_log_complete <- proteomics_sp_noZero_log[, c(colnames(measurement_data_sp_noNA), "Sample_ID")]
+```
+
+
+# Histograms after different pre-processing steps
+
+## DIAN data
+```{r}
+source("support_functions/PlotDistributions2.R")
+
+PlotDistributions(measurement_filtered, type = 'hist', main_title = 'No pre-processing' )
+PlotDistributions(proteomics_noZero, type = 'hist', main_title = 'Zero as half of minimum' )
+PlotDistributions(proteomics_noZero_log, type = 'hist', main_title = 'Log-transformation base 2' )
+PlotDistributions(proteomics_noZero_log_merged, type = 'hist', main_title = 'Merged replicates' )
+```
+
+## Spectronaut data
+```{r}
+PlotDistributions(measurement_filtered_sp, type = 'hist', main_title = 'No pre-processing' )
+PlotDistributions(proteomics_sp_noZero, type = 'hist', main_title = 'Zero as half of minimum' )
+PlotDistributions(proteomics_sp_noZero_log, type = 'hist', main_title = 'Log-transformation base 2' )
+PlotDistributions(proteomics_sp_noZero_log_complete, type = 'hist', main_title = 'Log-transformation base 2 (complete)' )
+PlotDistributions(proteomics_sp_noZero_log_merged, type = 'hist', main_title = 'Merged replicates' )
+```
+
+
+### Boxplots per sample
+```{r}
+source('support_functions/BoxplotSamples.R')
+
+boxplot_samples(proteomics_noZero_log_merged, 'DIANN')
+boxplot_samples(proteomics_sp_noZero_log_merged, 'Spectronaut')
+```
+
+
+## Save positive to CSV
+
+### DIANN
+```{r}
+# write.csv(proteomics_noZero_log_merged, file =  file.path(params$outdir, 'proteomics_data_di.csv'), row.names = F)
+# write.csv(proteomics_noZero_log, file =  file.path(params$outdir, 'proteomics_data_tech_reps_di.csv'), row.names = F)
+# write.csv(feature_metadata, file =  file.path(params$outdir, 'proteomics_feature_metadata_di.csv'))
+```
+
+### Spectronaut
+```{r}
+write.csv(proteomics_sp_noZero_log_merged, file =  file.path(params$outdir, 'proteomics_data.csv'), row.names = F)
+write.csv(proteomics_sp_noZero_log, file =  file.path(params$outdir, 'proteomics_data_tech_reps.csv'), row.names = F)
+write.csv(proteomics_sp_noZero_log_complete, file =  file.path(params$outdir, 'proteomics_data_tech_reps_complete.csv'), row.names = F)
+write.csv(feature_metadata_sp, file =  file.path(params$outdir, 'proteomics_feature_metadata.csv'), row.names = F)
+```
+
+
+```{r}
+sessionInfo()   
+```

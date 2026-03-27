@@ -1,0 +1,240 @@
+---
+title: 'Linear Mixed models'
+author:
+  - Casper de Visser^[Radboud university medical center, Casper.deVisser@radboudumc.nl]
+output:
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  mofa_scores: Z:/data/iPSC_data/Results/MOFA/All_Samples/SampleScores.csv
+  outdir: Z:/data/iPSC_data/results/RLM/
+  config_file: "config.yml"
+---
+
+## Libraries
+```{r}
+library(lme4)
+library(dplyr)
+library(openxlsx)
+```
+
+
+## Params
+The `MultiAssayExperiment` [@Ramos2017] contains preprocessed data and has been created with the *R* notebook `examples\create_MultiAssayExperiment.Rmd`.
+
+```{r read_multiassayexperiment}
+print(params)
+outdir <- params$outdir
+```
+
+## Read data and metadata: MultiAssayExperiment
+
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+#mae
+```
+
+
+The MultiAssayExperiment contains individual omics assays
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+
+## Assay selection
+```{r}
+experiment_names <- config$experiment_names$general_selection
+```
+
+
+Phenotype information shared across all assays can be accessed via `colData()`
+
+```{r sample_information_overview}
+names(colData(mae))
+
+pheno_df <- as.data.frame(colData(mae))
+
+## Add column for Disease vs Healthy comparison
+new_column <- lapply(pheno_df$phenotype, function(x) {
+    if (startsWith(x, 'Diseas')) {
+        value <- 'Disease'
+    }
+    else{
+        value <- 'Healthy'
+    }
+})
+pheno_df$Disease <- as.character(new_column)
+```
+
+
+## Correct omics values with MOFA factor 2 scores
+```{r}
+mofa_scores_df <- read.csv(params$mofa_scores, row.names = 1)
+```
+
+
+## Load functions for Nested Mixed Effect model
+```{r, warning=FALSE, message=FALSE}
+source('Mixed_Model_functions.R')
+```
+
+
+```{r}
+experiment_names
+```
+
+
+## Run Mixed Effect model, comparing individual disease groups with the control lines
+```{r}
+Predictor <- 'phenotype'
+
+mae_rlm_RandomEffect <- lapply(experiment_names, function(a) {
+  model_result <- run_rand_model_CORRECTED(a, pred=Predictor, confound_factors = c("Factor1", "Factor2"))
+  model_result <- model_result[model_result$outcome == 'phenotypeDiseased: CHD2',]
+  model_result$p.adj <- p.adjust(model_result$p.value, method = "BH")
+  model_result
+})
+merged_result_CHD2 <- do.call(rbind, mae_rlm_RandomEffect)
+```
+
+```{r}
+Predictor <- 'phenotype'
+
+mae_rlm_RandomEffect <- lapply(experiment_names, function(a) {
+  model_result <- run_rand_model_CORRECTED(a, pred=Predictor, confound_factors = c("Factor1", "Factor2"))
+  model_result <- model_result[model_result$outcome == 'phenotypeDiseased: NANS-CDG',]
+  model_result$p.adj <- p.adjust(model_result$p.value, method = "BH")
+  model_result
+})
+merged_result_NANS <- do.call(rbind, mae_rlm_RandomEffect)
+```
+
+
+## Run Mixed Effect model, comparing all disease with all controls
+```{r}
+Predictor <- 'Disease'
+
+mae_rlm_RandomEffect <- lapply(experiment_names, function(a) {
+  model_result <- run_rand_model_CORRECTED(a, pred=Predictor, confound_factors = c("Factor1", "Factor2"))
+  model_result
+})
+merged_result_Disease <- do.call(rbind, mae_rlm_RandomEffect)
+```
+
+
+## Run Mixed Effect model, comparing female and male samples
+```{r}
+Predictor <- 'sex'
+
+mae_rlm_RandomEffect <- lapply(experiment_names, function(a) {
+  model_result <- run_rand_model_CORRECTED(a, pred=Predictor, confound_factors = c("Factor1", "Factor2"))
+  model_result
+})
+merged_result_Sex <- do.call(rbind, mae_rlm_RandomEffect)
+```
+
+
+## Compare DM1 with control lines inculding CRISPR Rescue line
+```{r}
+Predictor <- 'phenotype_DM1'
+
+mae_rlm_RandomEffect <- lapply(experiment_names, function(a) {
+  model_result <- run_rand_model_CORRECTED(a, pred=Predictor, confound_factors = c("Factor1", "Factor2"), DM1_ONLY=T)
+  model_result
+})
+merged_result_DM1 <- do.call(rbind, mae_rlm_RandomEffect)
+```
+
+
+## Only compare patient 2 & 3 for DM1
+Remove DM patient 1 from MAE object
+```{r}
+DM1_p1_names <- c(
+  'IPS20_00122_1',
+  'IPS20_00122_2',
+  'IPS20_00122_3',
+  'IPS23_00090_1', #Rescue
+  'IPS23_00090_2', #Rescue
+  'IPS23_00090_3' #Rescue
+)
+
+sample_names <- rownames(colData(mae))
+sample_names_NoDMP1 <- sample_names[!sample_names  %in% DM1_p1_names]
+
+mae <- subsetByColData(mae, y = sample_names_NoDMP1)
+```
+
+```{r}
+Predictor <- 'phenotype_DM1'
+
+mae_rlm_RandomEffect <- lapply(experiment_names, function(a) {
+  model_result <- run_rand_model_CORRECTED(a, pred=Predictor, confound_factors = c("Factor1", "Factor2"), DM1_ONLY=T)
+  model_result
+})
+merged_result_DM1_P2P3 <- do.call(rbind, mae_rlm_RandomEffect)
+```
+
+
+Merge all results and save to .csv
+```{r}
+merged_results_all <- rbind(
+  merged_result_CHD2,
+  merged_result_NANS,
+  merged_result_DM1,
+  merged_result_DM1_P2P3,
+  merged_result_Disease,
+  merged_result_Sex
+  )
+
+write.csv(merged_results_all, 'MixedModelsResults_Corrected.csv')
+```
+
+
+Save tables per contrast per omics including feature metadata
+```{r}
+save2excel <- function(df, namefile) {
+  split_df <- split(df, df$Assay)
+  wb <- createWorkbook()
+  names(split_df) <- experiment_names
+  for (omics in names(split_df)) {
+    assay_name <- omics
+    omics <- strsplit(omics, " \\| ")[[1]][1]
+    addWorksheet(wb, sheetName = omics)
+    data <- split_df[[assay_name]][, c( "feature","coefficient","std.error","t.value","p.value","rand_effect","nest_effect","p.adj")]
+    data$rank <- rank(data$p.value)
+    ## Add feature metadata
+    feature_metadata <- data.frame(rowData(mae[[assay_name]]))
+    feature_metadata$feature <- rownames(feature_metadata)
+    data <- data %>%
+        left_join(feature_metadata, by = 'feature')
+    writeData(wb, sheet = omics, data)
+  }
+  saveWorkbook(wb, paste0(namefile, "_MixedModel_Results_CORRECTED.xlsx"), overwrite = T)
+}
+
+
+save2excel(merged_result_CHD2, 'CHD2')
+save2excel(merged_result_NANS, 'NANS')
+save2excel(merged_result_DM1_P2P3, 'DM1_P2_P3')
+save2excel(merged_result_DM1, 'DM1')
+save2excel(merged_result_Disease, 'All_diseases_combined')
+save2excel(merged_result_Sex, 'Sex')
+```
+
+## Session information
+
+```{r}
+sessionInfo()
+```
+
+

@@ -1,0 +1,230 @@
+---
+title: "RNAseq pre-processing comparison"
+output: html_document
+params:
+  mrna_read_data: Z:/data/iPSC_data/iPSC_RNAseq/iPSC_USEQ_processed/KUL9276_processed/featureCounts/KUL9276_processed_exon_featureCounts.raw.txt
+  outdir: Z:/data/iPSC_data/iPSC_MAE
+ 
+---
+
+## Normalize read count with edgeR data according to UMCUGenetics/RNASeq and custom scripts.
+
+#### Script parameters
+```{r}
+#print(Sys.Date())
+print(params)
+```
+
+
+### Libraries
+```{r}
+library(edgeR)
+suppressMessages(library(DESeq2))
+```
+
+
+### Read data
+```{r}
+mrna_read_data <- read.csv(params$mrna_read_data, row.names = 1, sep = '\t')
+mrna_read_data <- mrna_read_data[ , c(7:ncol(mrna_read_data))]
+```
+
+
+## EdgeR pre-processing from UMCUGenetics/RNASeq-NF
+```{r}
+tpm3 <- function(counts,len) {
+  x <- counts/len
+  return(t(t(x)*1e6/colSums(x)))
+}
+
+
+fc.df <- read.delim(params$mrna_read_data, comment.char="#")
+# Normalize 
+counts <- data.frame(fc.df[,8:ncol(fc.df)])
+colnames(counts) <- colnames(fc.df)[8:ncol(fc.df)]
+rownames(counts) <- fc.df$Geneid
+x <- DGEList(counts=counts, genes=fc.df[,c("Geneid","Length")] )
+# RPKM/CPM normalization
+df.rpkm <- rpkm(x,x$genes$Length, normalized.lib.sizes=F)
+df.cpm <- cpm(x)
+df.tpm = tpm3(counts, x$genes$Length)
+```
+
+
+### Make data frame of CPM data
+```{r}
+df.cpm <- data.frame(df.cpm)
+dim(df.cpm)
+```
+
+
+## Custom pre-procssing with CPM
+```{r}
+# Obtain CPMs
+myCPM <- cpm(counts)
+head(myCPM)
+```
+
+
+#### Filter lowly expressed genes based on CPM
+```{r}
+# Determine which in the CPM data frame are larger than 0.5
+threshold <- myCPM > 0.5
+
+# Keep genes have 2 TRUE in each row
+keep <- rowSums(threshold) >= 3
+counts.keep <- counts[keep,]
+dim(counts.keep)
+
+# Filter feature metadata as well
+rownames(fc.df) <- fc.df$Geneid
+fc.df.keep <- fc.df[rownames(counts.keep),]
+fc.df.keep <- fc.df.keep[,c(1:6)]
+```
+
+
+### Add mapped gene symbols
+```{r}
+rna_results <- openxlsx::read.xlsx('C:/Users/Casper.deVisser/Documents/All_Diseases_vsControls.xlsx', sheet = 'RNAseq')
+gene_symbols <- lapply(rownames(fc.df.keep), function(x) {
+  sym <- rna_results[rna_results$feature == x, 10]
+})
+fc.df.keep$Gene_symbol <- as.character(gene_symbols)
+fc.df.keep$Gene_symbol[fc.df.keep$Gene_symbol == 'character(0)'] <- NA
+```
+
+
+#### Create DGEList object
+```{r}
+dgeObj <- DGEList(counts= counts.keep, genes=fc.df.keep[,c("Geneid","Length")] )
+names(dgeObj)
+dgeObj$samples
+```
+
+
+## Log-transformations for both CPM data sets
+```{r}
+logcounts_cpm_umcu <- data.frame(cpm(x, log = TRUE))
+logcounts_cpm_custom <- data.frame(cpm(dgeObj, log = TRUE))
+```
+
+
+## Transpose dataframe 
+```{r}
+logcounts_cpm_custom <- data.frame(t(logcounts_cpm_custom))
+```
+
+
+## Plot distributions
+```{r, warning=FALSE}
+source("support_functions/PlotDistributions2.R")
+
+PlotDistributions(mrna_read_data, type = 'hist', main_title = 'Raw read counts' )
+PlotDistributions(df.cpm, type = 'hist', main_title = 'CPM UMCU' )
+PlotDistributions(logcounts_cpm_umcu, type = 'hist', main_title = 'CPM Log UMCU' )
+PlotDistributions(logcounts_cpm_custom, type = 'hist', main_title = 'CPM Log Custom (filtered)' )
+```
+
+### Boxplots per sample
+```{r}
+source('support_functions/BoxplotSamples.R')
+
+logcounts_cpm_custom$Sample_ID <- rownames(logcounts_cpm_custom)
+boxplot_samples(logcounts_cpm_custom, 'RNAseq')
+logcounts_cpm_custom$Sample_ID <- NULL
+```
+
+
+### Save custom to .csv
+```{r}
+write.csv(logcounts_cpm_custom, file.path(params$outdir, 'mrna_cpm_log.csv'))
+write.csv(fc.df.keep, file.path(params$outdir, 'mrna_feature_metadata.csv'), row.names = F)
+```
+
+
+
+## Normalize read count with DESeq2, again compare UMCUGenetics and custom script
+
+#### Pre-processing from UMCUGenetics/RNASeq-NF
+```{r}
+counts_raw <- read.delim(params$mrna_read_data, comment.char="#", row.names = 1)
+
+cds = as.matrix(counts_raw[,7:ncol(counts_raw)])
+colnames(cds) <- colnames(counts_raw)[7:ncol(counts_raw)]
+#Get column data and set dummy condition
+(colData <- data.frame(row.names=colnames(cds),condition=factor(c(rep("exp", ncol(cds))))))
+#Create DEseq2 dataset
+dds <- DESeqDataSetFromMatrix(countData = cds[, rownames(colData)], colData = colData, design = ~ 1)
+#Estimate size factors
+size.factors <- estimateSizeFactors(dds)
+#Normalize counts
+cds.norm <- counts(size.factors, normalized = T)
+
+# Dimension
+cds.norm <- data.frame(cds.norm)
+dim(cds.norm)
+```
+
+### Sample metadata from ISA files
+```{r}
+#isa_assay_rna <- readxl::read_excel(paste0(here::here(), params$isa_files), sheet = 'Assay - transcriptomics')
+isa_assay_rna <- readxl::read_xlsx('C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240514_Xomics iPSC Neurons_new_READ-ONLY.xlsx', sheet = 'Assay - transcriptomics')
+isa_observation <- readxl::read_xlsx('C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240514_Xomics iPSC Neurons_new_READ-ONLY.xlsx', sheet = 4)
+
+## Rewrite sample names to match ISA file
+isa_matching_names <- gsub("\\.", "-", rownames(colData))
+isa_matching_names <- paste0(isa_matching_names, "_1")
+isa_matching_names <- gsub("X", "", isa_matching_names)
+## Add to colData
+colData$isa_name <- isa_matching_names
+
+## Add sample idetifier to colData
+sample_identifiers <- lapply(isa_matching_names, function(x) {
+  sample_id <- isa_assay_rna[isa_assay_rna$`assay identifier` == x, 6]
+  sample_id[[1]]
+})
+colData$Sample_ID <- as.factor(as.character(sample_identifiers))
+```
+
+
+#### Custom script
+```{r}
+#Create DEseq2 dataset
+dds <- DESeqDataSetFromMatrix(countData = counts.keep, colData = colData, design = ~ Sample_ID)
+dds <- estimateSizeFactors(dds, type='ratio')
+dds <- estimateDispersions(dds)
+df.vst <- as.data.frame(assay(vst(dds, blind = F)))
+```
+
+## Transpose dataframe
+```{r}
+df.vst <- data.frame(t(df.vst))
+```
+
+
+### Plot distributions
+```{r}
+#PlotDistributions(cds.norm, type = 'hist', main_title = 'DESeq UMCU' )
+PlotDistributions(df.vst, type = 'hist', main_title = 'DESeq VST (custom)' )
+```
+
+### Boxplots per sample
+```{r}
+source('support_functions/BoxplotSamples.R')
+
+df.vst$Sample_ID <- rownames(df.vst)
+boxplot_samples(df.vst, 'RNAseq')
+df.vst$Sample_ID <- NULL
+```
+
+
+### Save custom DESeq to .csv
+```{r}
+write.csv(df.vst, file.path(params$outdir, 'mrna_deseq_log.csv'))
+```
+
+
+```{r}
+sessionInfo()
+```
+

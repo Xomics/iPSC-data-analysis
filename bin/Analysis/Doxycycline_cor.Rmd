@@ -1,0 +1,171 @@
+---
+title: "Doxycycline_correlations"
+output: html_document
+date: "2025-09-22"
+params:
+  outdir: Z:/data/iPSC_data/results/
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  config_file: 'config.yml'
+---
+
+```{r show_parameters}
+print(params)
+dir.create(params$outdir)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!dir.exists(outdir)){
+    outdir <- getwd()
+}
+```
+
+
+## Libraries
+```{r}
+library(ggplot2)
+library(reshape2)
+library(pheatmap)
+```
+
+
+## Read input data
+
+```{r read_input_data, message=FALSE}
+library(MultiAssayExperiment)
+library(HDF5Array)
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae'
+)
+names(mae)
+```
+
+
+## Retrieve omics data frame
+```{r}
+assay_name <- "Metabolomics, LUMC | unfiltered"
+
+se <- experiments(mae)[assay_name]
+df <- as.data.frame(t(assays(se)[[1]]))
+
+# Feature metadata
+feature_metadata <- as.data.frame(rowData(mae[[assay_name]]))
+```
+
+
+## Doxycyline analysis
+#TODO only positive mode metabolite
+```{r}
+column_doxy <- 'pos_2595' #Doxycycline
+
+correlate_with_base_column <- function(df, column_name, p_adjust_method = "BH") {
+  
+  results <- data.frame(Feature = character(), 
+                        Correlation = numeric(), 
+                        Pval = numeric(),
+                        stringsAsFactors = FALSE)
+  
+  for (col in colnames(df)) {
+    if ( col != column_name) {
+      cor_test <- cor.test(df[[column_name]], df[[col]], use = "complete.obs")
+      cor_value <- cor_test$estimate
+      p_value <- cor_test$p.value
+    }
+    
+    results <- rbind(results, data.frame(Feature = col, 
+                                         Correlation = cor_value,
+                                         Pval = p_value))
+
+  }
+  results$Padj <- p.adjust(results$Pval, method = p_adjust_method)
+  
+  return(data.frame(results))
+}
+
+
+result_doxy <- correlate_with_base_column(df, column_doxy)
+plot(sort(result_doxy$Correlation))
+```
+
+```{r}
+result_doxy_sign <- result_doxy[result_doxy$Padj <= 0.05,]
+
+plot(sort(result_doxy_sign$Correlation))
+
+```
+
+## Same plots with only pos ion mode data
+```{r}
+df_pos <- df[,startsWith(x = colnames(df), prefix = 'pos')]
+result_doxy_pos <- correlate_with_base_column(df_pos, column_doxy)
+
+plot(sort(result_doxy_pos$Correlation))
+```
+
+```{r}
+result_doxy_pos_sign <- result_doxy_pos[result_doxy_pos$Padj <= 0.05,]
+
+plot(sort(result_doxy_pos_sign$Correlation))
+```
+
+## Print top 50 correlating metabolites
+```{r}
+Doxy_cor_pos_top25 <- result_doxy_pos_sign[order(result_doxy_pos_sign$Correlation, decreasing = TRUE), ][1:25,]
+Doxy_cor_neg_top25 <- result_doxy_pos_sign[order(result_doxy_pos_sign$Correlation, decreasing = FALSE),][1:25,]
+
+Combined_df <- rbind(Doxy_cor_neg_top25, Doxy_cor_pos_top25)
+feature_metadata_sub <- feature_metadata[Combined_df$Feature,]
+Combined_df <- cbind(Combined_df, feature_metadata_sub)
+write.csv(Combined_df, file.path(outdir, 'Doxy_top_correlation.csv'))
+```
+
+
+## Glutamine analysis
+#TODO only positive mode metabolite
+```{r}
+column_gluta <- 'pos_1799' #Glutamine
+
+result_gluta_pos <- correlate_with_base_column(df, column_gluta)
+result_gluta_pos_sign <- result_gluta_pos[result_gluta_pos$Padj <= 0.05,]
+
+plot(sort(result_gluta_pos_sign$Correlation))
+```
+
+```{r}
+Gluta_cor_pos_top25 <- result_gluta_pos[order(result_gluta_pos$Correlation, decreasing = TRUE), ][1:25,]
+Gluta_cor_neg_top25 <- result_gluta_pos[order(result_gluta_pos$Correlation, decreasing = FALSE),][1:25,]
+
+Combined_df <- rbind(Gluta_cor_pos_top25, Gluta_cor_neg_top25)
+feature_metadata_sub <- feature_metadata[Combined_df$Feature,]
+Combined_df <- cbind(Combined_df, feature_metadata_sub)
+write.csv(Combined_df, file.path(outdir, 'Gluta_top_correlation.csv'))
+```
+
+
+Correlations with other metabolic features mapped to glutamine
+```{r}
+cor(df$pos_1799, df$pos_1901)
+plot(df$pos_1799, df$pos_1901)
+```
+
+
+```{r}
+cor(df$pos_1799, df$pos_1708)
+plot(df$pos_1799, df$pos_1708)
+
+```
+
+
+```{r}
+# Correlation matrix on all features
+cor_matrix <- cor(df, use = "complete.obs")
+
+mean_cor_df <- apply(cor_matrix, 2, function(x) mean(abs(x[x != 1])))
+
+sorted_features <- sort(mean_cor_df, decreasing = TRUE)
+
+top100_features <- names(sorted_features)[1:3000]
+
+#column_doxy %in% top100_features
+```

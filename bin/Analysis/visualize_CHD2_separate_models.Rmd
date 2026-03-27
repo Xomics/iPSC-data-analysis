@@ -1,0 +1,102 @@
+---
+title: "Visualize CHD2 separate models"
+output: html_document
+date: Sys.Date()
+---
+
+
+## Read model results for CHD2 het 409B
+```{r}
+read_model_output <- function(file_paths) {
+  
+  list_of_dfs <- lapply(file_paths, function(file) {
+    df <- read.csv(file, row.names = 1)
+    filename <- basename(file)
+    label <- sub("^(?:[^_]*_){4}", "",  filename)
+    label <- sub("\\.csv$", "", label)
+    df$assay <- label
+    df
+  })
+
+  combined_df <- do.call(rbind, list_of_dfs)
+  return(combined_df)
+}
+
+setwd('CHD2/CHD2_CRISPR_vsAll/')
+csv_files <- list.files(pattern = "\\.csv$", full.names=TRUE)
+CHD2_het409B <- read_model_output(csv_files)
+```
+
+## Read model results for CHD2 patient 2
+```{r}
+setwd('CHD2/CHD2_P2/')
+
+csv_files <- list.files(pattern = "\\.csv$", full.names=TRUE)
+
+CHD2_P2 <- read_model_output(csv_files)
+```
+
+
+## Read model results for CHD2 patien 3
+```{r}
+setwd('CHD2/CHD2_P3')
+
+csv_files <- list.files(pattern = "\\.csv$", full.names=TRUE)
+
+CHD2_P3 <- read_model_output(csv_files)
+```
+
+
+## Check signficant hits
+```{r}
+CHD2_het409B_sign <- CHD2_het409B[CHD2_het409B$p.adj < 0.05,]
+CHD2_P2_sign <- CHD2_P2[CHD2_P2$p.adj < 0.05,]
+CHD2_P3_sign <- CHD2_P3[CHD2_P3$p.adj < 0.05,]
+
+dim(CHD2_het409B_sign)
+dim(CHD2_P2_sign)
+dim(CHD2_P3_sign)
+```
+
+
+## Overlap of these
+```{r}
+library(grid)
+library(gridExtra)
+VennDiagram::venn.diagram(
+  x = list(CHD2_het409B_sign$feature, 
+           CHD2_P2_sign$feature, 
+           CHD2_P3_sign$feature),
+  category.names = c("CHD2_CRISPR", "CHD2_P2", "CHD2_P3"),
+  fill = c("red", "green", "blue"),
+  filename = "CHD2_VennDiagram.png",
+  output=TRUE
+)
+
+```
+
+
+## Which feature is shared by all?
+```{r}
+intersect(CHD2_het409B_sign$feature, 
+              CHD2_P2_sign$feature)
+
+# MTEF_HUMAN, Transcription termination factor 4, mitochondrial
+```
+
+
+## Which omics types are among the shared features in P2 and P3?
+```{r}
+intersection_P2_P3 <- intersect(CHD2_P3_sign$feature, 
+                                CHD2_P2_sign$feature)
+table(CHD2_P2_sign[CHD2_P2_sign$feature %in% intersection_P2_P3, "assay"])
+```
+
+
+##
+```{r}
+
+```
+
+
+

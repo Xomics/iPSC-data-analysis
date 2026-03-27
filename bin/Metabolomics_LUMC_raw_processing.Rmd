@@ -1,0 +1,640 @@
+---
+title: "Metablomics_LUMC_untargeted2Tabular"
+output: html_document
+params:
+  metabolomics_raw_pos: Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/New information requested/Untargeted met+lip/20231128_095100_metabolomics_pos.txt
+  metabolomics_raw_neg: Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/New information requested/Untargeted met+lip/20231128_095736_metabolomics_neg.txt
+  metadata1: "Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/New information requested/Untargeted met+lip/KB_2023_029_Alain Gool_IPSC cells_BCA results.xlsx"
+  metadata2: "Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/New information requested/Untargeted met+lip/KB_2023_029_ALain Gool_IPSC cells_sample list _metab.xlsx"
+  lumc_samples: Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Samples_match_ISA.xlsx
+  outdir: Z:/data/iPSC_data/iPSC_MAE
+
+---
+
+## Read processed untargeted metabolomics (LUMC) data and save to tabular formats for the MultiAssayExperiment object
+
+#### Script parameters
+```{r}
+print(Sys.Date())
+print(params)
+```
+
+### Libraries
+```{r}
+library(here)
+library(sessioninfo)
+library(tidyverse)
+library(Rfast)
+library(openxlsx)
+#library(ComplexHeatmap)
+source("support_functions/LUMC_mtblmcs_functions.R")
+```
+
+
+```{r}
+work_dir <- here()
+
+#### folders
+meta_dir <- file.path(work_dir, "Meta")
+result_dir <- file.path(work_dir, "Results")
+
+#### files
+# Define the file names of the MS-DIAL result files, first positive mode, 
+# next negative mode.
+msdial_files <- c(params$metabolomics_raw_pos, 
+                  params$metabolomics_raw_neg)
+
+# Name of the meta data file.
+meta_file <- "KB_2023_029_ALain Gool_IPSC cells_sample list _metab.xlsx"
+
+#### variables / parameters
+# rsd limit
+rsd_limit <- 0.3
+# sample / blank ratio limit
+sample_blank_limit <- 5
+# sample threshold
+sample_threshold_limit <- 0.8
+# group threshold
+group_threshold_limit <- 0.8
+```
+
+
+
+```{r}
+scale_rows <- function(x){
+  m <- apply(x, 1, mean, na.rm = TRUE)
+  s <- apply(x, 1, stats::sd, na.rm = TRUE)
+  
+  return((x - m) / s)
+}
+```
+
+
+```{r}
+raw_data <- tibble(polarity = c("pos", "neg"),
+                   filename = file.path(msdial_files),
+                   raw_data = map(.x = filename,
+                                  .f = ~ read_msdial(filename = .x)))
+```
+
+
+```{r}
+clean_data_wide <- clean_up(met_data = raw_data)
+```
+
+
+```{r}
+clean_data_wide |> 
+  select(-MSMSspectrum)
+```
+
+## Replace 'Unknown' by new feature_id
+```{r}
+replace_unknowns <- function(data, target_col, source_col) {
+  data[[target_col]][data[[target_col]] == "Unknown"] <- paste0('Unknown_', data[[source_col]][data[[target_col]] == 'Unknown'])
+  return(data)
+}
+
+clean_data_wide <- replace_unknowns(clean_data_wide, 'MetaboliteName', 'my_id')
+```
+
+```{r}
+clean_data_long <- tidy_data(met_data = clean_data_wide)
+```
+
+```{r}
+cur_pos <- read.table(
+  quote = "",
+  sep = "\n",
+  col.names = "comments",
+  text = "- PYROCATECHOL (329), not a great match
+- CYTOSINE (335), not a great match
+- 3-HYDROXYBENZOATE (426), not a great match
+- N-ACETYLPUTRESCINE (553), not a great match
+- HYPOXANTHINE (690), not a great match
+- N-ACETYLASPARTATE (942), not a great match
+- INDOLE-3-ETHANOL (990), not a great match
+- AMINOADIPATE (989), not a great match
+- 5-HYDROXYLYSINE (1024), not a great match
+- 4-PYRIDOXATE (1053), not a great match
+- HOMOGENTISATE (975), not a great match
+- N-ACETYLASPARAGINE (1182), not a great match
+- TRYPTAMINE (1307), not a great match
+- 4-PYRIDOXATE (1311), not a great match
+- 3,4 DIHYDROXYMANDELATE (1331), not a great match
+- FERULATE (1499), not a great match
+- OMEGA-HYDROXYDODECANOATE (1562), not a great match
+- N-ACETYLPHENYLALANINE (1704), not a great match
+- 2-ACETAMIDO-2-DEOXY-BETA-D-GLUCOSYLAMINE (1899), not a great match
+- CYSTATHIONINE (1933), not a great match
+- URIDINE (2294), not a great match
+- 5'-DEOXYADENOSINE (2414), not a great match
+- MELATONIN (2676), not a great match
+- OPHTHALMATE (2938), not a great match
+- INOSINE (3162), not a great match
+- ADENOSINE 2',3'-CYCLIC PHOSPHATE (3400), not a great match
+- DEOXYCYTIDINE MONOPHOSPHATE (3571), not a great match
+- CORTISOL (3736), not a great match
+- RIBOFLAVIN (3843), not a great match
+- MELIBIOSE (3868), not a great match
+- CORTISONE (4002), not a great match
+- CORTISONE (4001), not a great match"
+)
+
+pattern <- "^[ ]{0,2}- ([-:/ ',A-Z0-9wo\\(\\)]*) \\(([0-9]{3,4})\\), (no MSMS|not a great match)$"
+
+cur_pos$MetaboliteName <- gsub(x = cur_pos$comments,
+                               pattern = pattern,
+                               replacement = "\\1")
+cur_pos$my_id <- paste0("pos_", gsub(x = cur_pos$comments,
+                                     pattern = pattern,
+                                     replacement = "\\2"))
+cur_pos$reason <- gsub(x = cur_pos$comments,
+                       pattern = pattern,
+                       replacement = "\\3")
+cur_pos$comments <- NULL
+```
+
+
+```{r}
+cur_neg <- read.table(
+  quote = "",
+  sep = "\n",
+  col.names = "comments",
+  text = "- ETHYLMALONATE (1427), not a great match
+  - RIBOFLAVIN (7321), not a great match
+  - w/o MS2: N-FORMYLGLYCINE (833), not a great match
+  - w/o MS2: MALONATE (863), not a great match
+  - w/o MS2: MALEATE (1128), not a great match
+  - N-ACETYLGLYCINE (1148), not a great match
+  - N-ACETYLGLYCINE (1147), not a great match
+  - SUCCINATE (1190), not a great match
+  - THREONINE (1208), not a great match
+  - 4-HYDROXYBENZALDEHYDE (1257), not a great match
+  - OXOPROLINE (1368), not a great match
+  - ASPARTATE (1445), not a great match
+  - ADENINE (1481), not a great match
+  - ADENINE (1475), not a great match
+  - N-ACETYLSERINE (1670), not a great match
+  - N-ACETYLSERINE (1667), not a great match
+  - 2',4'-DIHYDROXYACETOPHENONE (1748), not a great match
+  - w/o MS2: MANDELATE (1749), not a great match
+  - w/o MS2: 3-SULFINOALANINE (1754), not a great match
+  - w/o MS2: N-ACETYLASPARAGINE (1795), not a great match
+  - w/o MS2: 3-(2-HYDROXYPHENYL)PROPANOATE (1992), not a great match
+  - w/o MS2: THIOPURINE S-METHYLETHER (1978), not a great match
+  - w/o MS2: THIOPURINE S-METHYLETHER (1977), not a great match
+  - w/o MS2: URATE (2013), not a great match
+  - w/o MS2: 3-DEHYDROSHIKIMATE (2064), not a great match
+  - w/o MS2: L-ARGININE (2120), not a great match
+  - w/o MS2: N-ACETYLASPARAGINE (2113), not a great match
+  - w/o MS2: TRANS-ACONITATE (2109), not a great match
+  - w/o MS2: TRANS-ACONITATE (2108), not a great match
+  - w/o MS2: SUBERATE (2114), not a great match
+  - w/o MS2: SUBERATE (2115), not a great match
+  - w/o MS2: N-ACETYLASPARTATE (2134), not a great match
+  - w/o MS2: CAFFEATE (2209), not a great match
+  - HYDROXYPHENYLLACTATE (2234), not a great match
+  - AZELATE (2332), not a great match
+  - AZELATE (2330), not a great match
+  - N-ACETYLGLUTAMATE (2352), not a great match
+  - N-ACETYLGLUTAMATE (2351), not a great match
+  - QUINATE (2409), not a great match
+  - CITRATE (2405), not a great match
+  - FERULATE (2428), not a great match
+  - L-DOPA (2489), not a great match
+  - N-ACETYLPHENYLALANINE (2726), not a great match
+  - D-SEDOHEPTULOSE (2787), not a great match
+  - SORBOSE (2909), not a great match
+  - CYSTATHIONINE (3053), not a great match
+  - D-RIBOSE 5-PHOSPHATE (3234), not a great match
+  - CYSTINE (3461), not a great match
+  - THYMIDINE (3521), not a great match
+  - CYTIDINE (3549), not a great match
+  - URIDINE (3581), not a great match
+  - BIOTIN (3582), not a great match
+  - GLUCOSAMINE 6-PHOSPHATE (3942), not a great match
+  - N-ACETYLSEROTONIN (4045), not a great match
+  - DEOXYGUANOSINE (4123), not a great match
+  - DEOXYCYTIDINE (4436), not a great match
+  - MELATONIN (4573), not a great match
+  - THYMIDINE (4799), not a great match
+  - CYTIDINE (4822), not a great match
+  - URIDINE (4848), not a great match
+  - EICOSAPENTAENOATE (5138), not a great match
+  - DEOXYURIDINE-MONOPHOSPHATE (5254), not a great match
+  - URIDINE MONOPHOSPHATE (5621), not a great match
+  - ADENOSINE 2',3'-CYCLIC PHOSPHATE (5749), not a great match
+  - AICAR (5937), not a great match
+  - INOSINE-MONOPHOSPHATE (6166), not a great match
+  - CORTISOL (6435), not a great match
+  - LITHOCHOLATE (6710), not a great match
+  - S-ADENOSYLHOMOCYSTEINE (6845), not a great match
+  - DEOXYCHOLATE (6984), not a great match
+  - DEOXYCHOLATE (6985), not a great match
+  - CORTISONE (7051), not a great match
+  - CORTISONE (7234), not a great match
+  - CORTISOL 21-ACETATE (7733), not a great match
+  - CHOLATE (7951), not a great match
+  - CITICOLINE (8499), not a great match
+  - RAFFINOSE (8706), not a great match
+  - RAFFINOSE (9125), not a great match"
+)
+
+pattern <- "^[ ]{0,2}- ([-:/ ',A-Z0-9wo\\(\\)]*) \\(([0-9]{3,4})\\), (no MSMS|not a great match)$"
+
+cur_neg$MetaboliteName <- gsub(x = cur_neg$comments,
+                               pattern = pattern,
+                               replacement = "\\1")
+cur_neg$my_id <- paste0("neg_", gsub(x = cur_neg$comments,
+                                     pattern = pattern,
+                                     replacement = "\\2"))
+cur_neg$reason <- gsub(x = cur_neg$comments,
+                       pattern = pattern,
+                       replacement = "\\3")
+cur_neg$comments <- NULL
+```
+
+
+```{r}
+# remove the bad matches
+cur <- rbind(
+  cur_pos,
+  cur_neg
+)
+
+clean_data_long <- clean_data_long[!(clean_data_long$my_id %in% cur$my_id), ]
+```
+
+
+```{r}
+clean_data_long <- clean_data_long[!is.na(clean_data_long$MSMSspectrum), ]
+```
+
+
+```{r}
+clean_data_long <- clean_data_long |> 
+  group_by(MetaboliteName, polarity, SampleName, SampleType) |> 
+  summarise(PeakArea = sum(PeakArea),
+            .groups = "drop") |> 
+  # add ID's
+  group_by(polarity, SampleName) |> 
+  mutate(my_id = 1:n(),
+         my_id = paste0(polarity, "_", my_id)) |> 
+  ungroup()
+```
+
+
+```{r}
+meta_data <- read.xlsx(params$metadata2, 
+                       sheet = "Sheet4") |> 
+  mutate(SampleType = as.factor(SampleType),
+         Sequence = as.factor(Sequence),
+         Group = as.factor(Group),
+         kevinNr = as.numeric(kevinNr))
+
+
+
+# If there are multiple sequences some extra things need to be calculated. Determine
+# here if this needed.
+incl_seq <- ifelse(length(unique(meta_data$Sequence)) > 1,
+                   TRUE,
+                   FALSE)
+```
+
+
+```{r}
+bca1 <- read.xlsx(xlsxFile = params$metadata1, 
+                  sheet = 2, 
+                  cols = 1:6, 
+                  rows = 23:41)
+
+
+bca2 <- read.xlsx(xlsxFile = params$metadata1,
+                  sheet = 3,
+                  cols = 1:6,
+                  rows = 23:41)
+
+bca <- rbind.data.frame(bca1, bca2)
+colnames(bca) <- c("kevinNr", "absAvg1", "absAvg2", "conc1", "conc2", "avgProteinContent")
+```
+
+```{r}
+meta_data <- merge(
+  x = meta_data,
+  y = bca[, c("kevinNr", "avgProteinContent")],
+  by.x = "kevinNr",
+  by.y = "kevinNr",
+  all.x = TRUE
+)
+```
+
+
+
+```{r}
+clean_data <- clean_data_long |> 
+  left_join(y = meta_data,
+            by = c("SampleName" = "SampleName"),
+            suffix = c("", ".y"))
+```
+
+
+```{r}
+blank_data <- clean_data |> 
+  filter(SampleType == "blank") |> 
+  select(my_id, polarity, MetaboliteName, Sequence, PeakArea) |> 
+  group_by(my_id, Sequence) |> 
+  summarise(AvgBlank = mean(PeakArea, na.rm = TRUE),
+            .groups = "drop")
+
+# calculate the ratio sample / blank
+ratio_data <- clean_data |> 
+  filter(SampleType == "sample") |> 
+  left_join(y = blank_data,
+            by = c("my_id" = "my_id",
+                   "Sequence" = "Sequence")) |> 
+  # determine the sample / blank ratio
+  mutate(sample_blank_ratio = PeakArea / AvgBlank,
+         sample_blank_keep = ifelse(sample_blank_ratio < sample_blank_limit,
+                                    FALSE,
+                                    TRUE))
+sample_data_threshold <- ratio_data |> 
+  group_by(my_id) |> 
+  summarise(sample_threshold = mean(sample_blank_keep),
+            .groups = "drop") |> 
+  filter(sample_threshold >= sample_threshold_limit) |> 
+  pull(my_id)
+
+# group_data_threshold <- ratio_data |> 
+#   group_by(my_id, Group) |> 
+#   summarise(group_threshold = mean(sample_blank_keep),
+#             .groups = "drop") |> 
+#   group_by(my_id) |> 
+#   summarise(group_threshold_max = max(group_threshold, na.rm = TRUE),
+#             .groups = "drop") |> 
+#   filter(group_threshold_max >= group_threshold_limit) |> 
+#   pull(my_id)
+# 
+# keep_met_sampleblank <- base::union(sample_data_threshold, group_data_threshold)
+keep_met_sampleblank <- sample_data_threshold
+```
+
+
+
+```{r}
+set.seed(123)
+rnd_metabolites <- sample(x = unique(clean_data$my_id),
+                          size = 10)
+```
+
+
+## Find possible trend in QC samples and filter if necessary
+
+```{r}
+trend_data <- clean_data |> 
+  filter(SampleType == "qcpool",
+         my_id %in% rnd_metabolites)
+```
+
+
+```{r, fig.height=10}
+plot_trend(data = trend_data)
+```
+
+
+```{r}
+reference_data <- clean_data |> 
+  filter(SampleName == "Qcpool_006") |> 
+  select(my_id, Sequence, PeakArea) |> 
+  rename(Reference = PeakArea)
+
+trend_all_data <- clean_data |> 
+  filter(SampleType == "qcpool") |> 
+  left_join(y = reference_data,
+            by = c("my_id" = "my_id",
+                   "Sequence" = "Sequence")) |> 
+  mutate(log2fc = log2(PeakArea / Reference))
+
+plot_all_trends(data = trend_all_data)
+```
+
+
+## Remove samples with infinite log-fold change
+```{r}
+trend_all_data_noInfite <- trend_all_data[trend_all_data$log2fc != -Inf ,] # Removes 697 rows
+trend_all_data_noInfite <- trend_all_data_noInfite[trend_all_data_noInfite$log2fc != Inf ,] # Removes 339 rows
+plot_all_trends(data = trend_all_data_noInfite)
+```
+No trend correction needed
+
+
+## Remove features with infinite values in first trend plot
+```{r}
+metabolite_keep <- unique(trend_all_data_noInfite$MetaboliteName)
+clean_data <- clean_data[clean_data$MetaboliteName %in% metabolite_keep, ]
+```
+
+
+```{r}
+# get the qc data for rsd calculations
+qc_data <- clean_data |> 
+  filter(SampleType == "qcpool")
+```
+
+
+```{r}
+rsd_data_overall <- qc_data |> 
+  group_by(polarity, MetaboliteName, my_id) |> 
+  summarise(rsd = sd(PeakArea, na.rm = TRUE) / mean(PeakArea, na.rm = TRUE),
+            .groups = "drop")
+
+keep_met_rsd <- rsd_data_overall$my_id[rsd_data_overall$rsd <= rsd_limit]
+
+rsd_data_seq <- qc_data |> 
+  group_by(polarity, Sequence, MetaboliteName, my_id) |> 
+  summarise(rsd = sd(PeakArea, na.rm = TRUE) / mean(PeakArea, na.rm = TRUE),
+            .groups = "drop")
+```
+
+
+```{r}
+rsd_plot(data = rsd_data_overall,
+         type = "overall",
+         rsd_limit = rsd_limit)
+```
+
+
+
+```{r}
+# keep_metabolites <- rsd_data_overall_cor |> 
+keep_metabolites <- rsd_data_overall |> 
+  group_by(MetaboliteName) |> 
+  mutate(keep_metabolite = if_else(rsd == min(rsd), TRUE, FALSE)) |> 
+  filter(keep_metabolite == TRUE) |> 
+  pull(my_id)
+
+# clean_data_cor <- clean_data_cor |> 
+#   filter(my_id %in% keep_metabolites)
+
+# also remove from the raw data
+clean_data <- clean_data |> 
+  filter(my_id %in% keep_metabolites)
+```
+
+
+```{r}
+keep_metabolites <- base::intersect(
+  keep_met_rsd,
+  keep_met_sampleblank
+)
+```
+
+
+```{r}
+# cleaned_data <- clean_data_cor |> 
+cleaned_data <- clean_data |> 
+  filter(my_id %in% keep_metabolites) |> 
+  select(my_id, polarity, MetaboliteName, SampleName, everything()) |> 
+  arrange(SampleName)
+
+cleaned_data_raw <- clean_data |> 
+  filter(my_id %in% keep_metabolites) |> 
+  select(my_id, polarity, MetaboliteName, SampleName, everything()) |> 
+  arrange(SampleName)
+```
+
+```{r}
+# get the qc data for rsd calculations
+qc_data_cleaned <- cleaned_data |> 
+  filter(SampleType == "qcpool")
+```
+
+```{r}
+rsd_data_overall_cleaned <- qc_data_cleaned |> 
+  group_by(polarity, MetaboliteName, my_id) |> 
+  # summarise(rsd = sd(PeakAreaCor, na.rm = TRUE) / mean(PeakAreaCor, na.rm = TRUE),
+  summarise(rsd = sd(PeakArea, na.rm = TRUE) / mean(PeakArea, na.rm = TRUE),
+            .groups = "drop")
+```
+
+
+```{r}
+cleaned_data_totnorm <- cleaned_data
+cleaned_data_totnorm <- cleaned_data_totnorm[cleaned_data_totnorm$SampleType == "sample", ]
+tot_sum_data <- tapply(cleaned_data_totnorm$PeakArea, cleaned_data_totnorm$SampleName, sum, simplify = FALSE)
+tot_sum_data <- as.data.frame(do.call("rbind", tot_sum_data))
+colnames(tot_sum_data)[1] <- "totalPeakArea"
+tot_sum_data$SampleName <- rownames(tot_sum_data)
+
+cleaned_data_totnorm <- merge(
+  x = cleaned_data_totnorm,
+  y = tot_sum_data,
+  by = "SampleName"
+)
+
+cleaned_data_totnorm$peakAreaNorm <- cleaned_data_totnorm$PeakArea / cleaned_data_totnorm$totalPeakArea
+```
+
+
+```{r}
+cleaned_data_norm <- cleaned_data
+cleaned_data_norm$peakAreaNorm <- cleaned_data_norm$PeakArea / cleaned_data_norm$avgProteinContent
+```
+
+
+```{r}
+# Transpose the meta data for export
+t_meta <- meta_data |> 
+  # remove blanks
+  filter(SampleType != "blank") |> 
+  # select the columns
+  select(SampleName, SampleType, Group, InjOrder) |> 
+  # sort by filename
+  arrange(SampleName) |> 
+  # everything needs to be character in order to transpose
+  mutate(across(everything(), as.character)) |> 
+  pivot_longer(-SampleName) |> 
+  pivot_wider(names_from = SampleName,
+              values_from = value) |> 
+  mutate(MetaboliteName = NA) |> 
+  relocate(MetaboliteName, .after = "name") |> 
+  rename(MetID = name)
+```
+
+
+```{r}
+export_raw <- cleaned_data_raw |> 
+  filter(SampleType != "blank") |> 
+  pivot_wider(id_cols = c(my_id, MetaboliteName),
+              names_from = SampleName,
+              values_from = PeakArea) |> 
+  rename(MetID = my_id) |> 
+  arrange(MetaboliteName)
+
+export_raw <- rbind(t_meta, export_raw)
+
+# export_cor <- cleaned_data |> 
+#   filter(SampleType != "blank") |> 
+#   pivot_wider(id_cols = c(my_id, MetaboliteName),
+#               names_from = SampleName,
+#               values_from = PeakAreaCor) |> 
+#   rename(MetID = my_id) |> 
+#   arrange(MetaboliteName)
+# 
+# export_cor <- rbind(t_meta, export_cor)
+
+export_totnorm <- cleaned_data_totnorm |>
+  filter(SampleType == "sample") |>
+  pivot_wider(id_cols = c(my_id, MetaboliteName),
+              names_from = SampleName,
+              values_from = peakAreaNorm) |>
+  rename(MetID = my_id)
+
+export_totnorm <- rbind(t_meta[, !grepl(x = colnames(t_meta),
+                                        pattern = "Qcpool")], 
+                        export_totnorm)
+
+export_norm <- cleaned_data_norm |>
+  filter(SampleType == "sample") |>
+  pivot_wider(id_cols = c(my_id, MetaboliteName),
+              names_from = SampleName,
+              values_from = peakAreaNorm) |>
+  rename(MetID = my_id)
+
+export_norm <- rbind(t_meta[, !grepl(x = colnames(t_meta),
+                                     pattern = "Qcpool")], 
+                     export_norm)
+```
+
+## Feature metadata export
+```{r}
+feature_metadata <- clean_data_wide[,1:14]
+## Subset with metabolites in export
+feature_metadata <- feature_metadata[feature_metadata$MetaboliteName %in% export_norm$MetaboliteName,]
+## Put in the same order as measurement data
+feature_metadata <- feature_metadata[match(export_norm$MetaboliteName, feature_metadata$MetaboliteName),]
+## Add same my_id column
+feature_metadata$my_id <- export_norm$MetID
+```
+
+```{r}
+wb <- createWorkbook()
+addWorksheet(wb, "Raw")
+writeData(wb, "Raw", export_raw)
+
+addWorksheet(wb, "Total area normalized")
+writeData(wb, "Total area normalized", export_totnorm)
+
+addWorksheet(wb, "Protein content normalized")
+writeData(wb, "Protein content normalized", export_norm)
+
+addWorksheet(wb, "Feature metadata")
+writeData(wb, "Feature metadata", feature_metadata)
+
+saveWorkbook(wb, file =  "Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Metabolomics_results_unfiltered.xlsx")
+```
+
+
+```{r}
+sessionInfo()   
+```

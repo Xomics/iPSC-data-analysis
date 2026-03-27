@@ -1,0 +1,215 @@
+---
+title: "QC_WES"
+author: "Cenna Doornbos"
+output: html_document
+params:
+  cnv_wes_ed_data_tab: Z:/data/iPSC_data/iPSC_CNV-WES/Data_integration/cnv_ed.csv
+---
+
+## Additional QC analysis for WES data
+
+#### Script parameters
+```{r, params}
+print(Sys.Date())
+print(params)
+```
+### Libraries
+```{r, read data}
+library(readxl)
+library(tidyverse)
+library(ggrepel)
+library(plotly)
+library(ggplot2)
+```
+
+# Read data
+```{r, read data}
+data_frame_ed <- read.csv(params$cnv_wes_ed_data_tab)
+```
+
+
+
+
+
+# CHD2 P3 clones
+```{r}
+CHD2_P3_names <- c('CHD2_p3c1', 'CHD2_p3c2')
+data_frame_ed_CHD2_P3 <- data_frame_ed[data_frame_ed$sample_name %in% CHD2_P3_names,]
+```
+
+
+Number of mutations found per clone per chromosome
+```{r}
+table(data_frame_ed_CHD2_P3$sample_name, data_frame_ed_CHD2_P3$chromosome )
+```
+
+Type of mutations found per clone 
+```{r}
+table(data_frame_ed_CHD2_P3$sample_name, data_frame_ed_CHD2_P3$type )
+```
+
+## How many mutations are not consistent across clones?
+```{r}
+## Table with id frequency
+tab <- table(data_frame_ed_CHD2_P3$id)
+
+message("IDs found in both 3 clones: ")
+print(length(tab[tab>1]))
+```
+
+## Filter deletions/duplications not mapped to exons
+```{r}
+data_frame_ed_CHD2_P3_exons <- data_frame_ed_CHD2_P3[data_frame_ed_CHD2_P3$nexons >= 1,]
+data_frame_ed_CHD2_P3_exons
+```
+
+
+
+
+# DM1 P2 clones
+```{r}
+DM1_P2_names <- c('DM1_p2c1', 'DM1_p2c2', 'DM1_p2c3')
+data_frame_ed_DM_P2 <- data_frame_ed[data_frame_ed$sample_name %in% DM1_P2_names,]
+```
+
+
+Number of mutations found per clone per chromosome
+```{r}
+table(data_frame_ed_DM_P2$sample_name, data_frame_ed_DM_P2$chromosome )
+```
+
+Type of mutations found per clone 
+```{r}
+table(data_frame_ed_DM_P2$sample_name, data_frame_ed_DM_P2$type )
+```
+
+## How many mutations are not consistent across clones?
+```{r}
+## Table with id frequency
+tab <- table(data_frame_ed_DM_P2$id)
+
+message("IDs found in at least two of 3 clones: ")
+print(length(tab[tab>1]))
+
+message("IDs found in all 3 clones: ")
+print(length(tab[tab>2]))
+```
+
+
+
+## Filter deletions/duplications not mapped to exons
+```{r}
+data_frame_ed_DM_P2_exons <- data_frame_ed_DM_P2[data_frame_ed_DM_P2$nexons >= 1,]
+data_frame_ed_DM_P2_exons
+```
+
+
+## DM P2 clones on chromsome 12
+```{r}
+data_frame_ed_DM_P2_Chr12 <- data_frame_ed_DM_P2[data_frame_ed_DM_P2$chromosome == 12,]
+data_frame_ed_DM_P2_Chr12
+```
+
+NANOG_2
+```{r}
+data_frame_ed_DM_P2_Chr12[!is.na(data_frame_ed_DM_P2_Chr12$exons.hg19) & startsWith(data_frame_ed_DM_P2_Chr12$exons.hg19, 'NANO'),]
+```
+
+## Clone 2 on only chromsome 12
+```{r}
+data_frame_ed_DM_P2_Chr12_Clone2 <- data_frame_ed_DM_P2_Chr12[data_frame_ed_DM_P2_Chr12$sample_name == 'DM1_p2c2',]
+```
+
+
+
+## Compare with DMRs found between clone 2 and other clones
+```{r}
+DMRs_c2_df <- read.csv('Z:/data/iPSC_data/Results/DMR/DMRS_DM1_c2.csv', row.names=1)
+DMRs_c2_df_Chr12 <- DMRs_c2_df[DMRs_c2_df$chr == 'chr12',]
+```
+
+
+## Visualize overlap
+```{r}
+df_Meth <- DMRs_c2_df_Chr12[, c('start', 'end')]
+df_WES <- data_frame_ed_DM_P2_Chr12_Clone2[, c('start', 'end')]
+```
+
+
+```{r, fig.width=14, fig.height=3}
+df_Meth$group <- 'DMR'
+df_WES$group <- 'WES'
+
+df_combined <- rbind(df_Meth, df_WES)
+df_combined$id <- seq_len(nrow(df_combined))
+
+plot_WES_Meth_overlap <- function(df, linetype = 'butt') {
+    df$y_jitter <- as.numeric(factor(df$group)) + runif(nrow(df), -0.3, 0.3)
+    
+    ggp <- ggplot(df) +
+      geom_segment(aes(x=start, xend = end,
+                   y = y_jitter, yend = y_jitter,
+                   group = id, color = group),
+                   size = 2, alpha = 1,
+                   lineend = linetype) +
+      #scale_color_viridis_d(option= "cividis", name = "group") +
+      theme_minimal()
+  return(ggp)
+}
+
+ggp <- plot_WES_Meth_overlap(df_combined, linetype = 'round')
+ggp
+ggsave('Chr12_WES_EMseq.pdf', ggp, width=20, height=3, dpi=300)
+```
+
+
+## Compare All samples on this Chromosome 12 locus
+```{r}
+data_frame_ed_Chr12 <- data_frame_ed[data_frame_ed$chromosome == 12,]
+df_WES <- data_frame_ed_Chr12[, c('start', 'end')]
+
+
+df_Meth <- DMRs_c2_df_Chr12[, c('start', 'end')]
+
+
+df_Meth$group <- 'DMR'
+df_WES$group <- 'WES'
+
+df_combined <- rbind(df_Meth, df_WES)
+df_combined$id <- seq_len(nrow(df_combined))
+
+plot_WES_Meth_overlap <- function(df, linetype = 'round') {
+    
+    df$y_jitter <- as.numeric(factor(df$group)) + runif(nrow(df), -0.3, 0.3)
+    
+    ggp <- ggplot(df) +
+      geom_segment(aes(x=start, xend = end,
+                   y = y_jitter, yend = y_jitter,
+                   group = id, color = group),
+                   size = 2, alpha = 1,
+                   lineend = linetype) +
+      #scale_color_viridis_d(option= "cividis", name = "group") +
+      theme_minimal()
+        
+  return(ggp)
+}
+
+ggp <- plot_WES_Meth_overlap(df_combined)
+ggp
+ggsave('Chr12_WES_EMseq_ALL_SAMPLES.pdf', ggp, width=20, height=3, dpi=300)
+```
+
+
+
+
+
+Zoom in in region with many mutations
+```{r}
+ggp <- plot_WES_Meth_overlap(df_combined[df_combined$start > 125000000, ]) + 
+  xlim(c(125000000, 132000000)) +
+  xlab('Genomic coordinate') +
+  ylab(element_blank()) + 
+  ggtitle('WES and Methylation data on Chr 12')
+ggp
+```
+

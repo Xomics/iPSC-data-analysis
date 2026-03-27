@@ -1,0 +1,288 @@
+---
+title: "Cluster_samples_with_sign_hits"
+output: html_document
+params:
+  outdir: Z:/data/iPSC_data/results/MixedModels/Plots
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+---
+
+# Visualize results of linear modelling
+
+## Parameters
+
+```{r}
+print(params)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!dir.exists(outdir)){
+    outdir <- getwd()
+}
+```
+
+
+## Read data and metadata: MultiAssayExperiment
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+```
+
+
+## Libraries
+```{r}
+library(dplyr)
+library(tidyr)
+library(pheatmap)
+library(viridis)
+library(ggplot2)
+```
+
+
+## Read nested mixed models (disease-specific associations)
+```{r}
+MixedModel <-  read.csv('MixedModels2/Model_phenotype.csv', row.names=1)
+MixedModel <- MixedModel[MixedModel$outcome != 'phenotypeDiseased: DM1',]
+MixedModel_DM1 <- read.csv('MixedModels2/MixedModels_DM1_Rescue.csv', row.names = 1)
+MixedModel <- rbind(MixedModel, MixedModel_DM1)
+```
+
+
+## Sample metadata 
+```{r}
+pheno_df <- as.data.frame(colData(mae))
+pheno_df <- pheno_df %>% arrange(phenotype)
+sorted_samples <- pheno_df$sample.identifier
+sorted_samples <- gsub("-", "_", sorted_samples)
+```
+
+
+## Get significant omics featues in any disease contrast
+```{r}
+# Find significant proteins
+Features_sign <- MixedModel[MixedModel$p.adj < 0.05,]
+Features_sign <- Features_sign[Features_sign$outcome != 'phenotypeRescue: repeat excised CRISPR DM1', ]
+```
+
+
+## Subset significant proteins across all comparisons
+```{r, fig.width=10, fig.height=10}
+## Clustering heatmap based on selection of omcis features, color by disease group
+##
+## @param assay_name Omics assay name
+## @param omics_features List of omics features to used
+## @return heatmap plot object
+heatmap_sign_features <- function(assay_name, row_names =  TRUE, omics_features, sub_dir) {
+  
+  # Select these proteins in measurement data
+  se <- experiments(mae)[[assay_name]]
+  df_assay <- as.data.frame(t(assays(se)[[1]]))
+  df_assay <- df_assay[,names(df_assay) %in% omics_features]
+  # Remove X in 409B sample names
+  rownames(df_assay) <- gsub("X", "", rownames(df_assay))
+  sorted_samples_sub <- sorted_samples[sorted_samples %in% rownames(df_assay)]
+  df_assay <- df_assay[sorted_samples_sub,]
+  
+  annotation_col <- data.frame(Group = pheno_df$phenotype)
+  rownames(annotation_col) <- sorted_samples
+  
+  # Clustering of proteins
+  row_clustering <- hclust(dist(t(df_assay)))
+  
+  color_palette <- palette.colors(palette = 'Okabe-Ito')
+  
+  annotation_colors <- list(
+    Group = c('Diseased: CHD2' = color_palette[[3]],
+              'Diseased: CHD2 CRISPR' = color_palette[[2]],
+              'Diseased: DM1' = color_palette[[4]],
+              'Diseased: NANS-CDG' = color_palette[[7]],
+              'Healthy' = color_palette[[5]],
+              'Rescue: repeat excised CRISPR DM1' = color_palette[[6]])
+  )
+  
+  distance_matrix <- as.matrix(as.dist(df_assay))
+  heatmap <- pheatmap(t(df_assay),
+           clustering_distance_rows = "euclidean",
+           clustering_method = "ward.D2",
+           cluster_rows = TRUE,
+           cluster_cols = TRUE,
+           annotation_col = annotation_col,
+           #annotation_row = annotation_row,
+           annotation_colors = annotation_colors,
+           scale='row',
+           show_rownames = row_names,
+           show_colnames = TRUE,
+           main = paste0(assay_name))
+  
+  # Check which features cluster together
+  row_clust <- heatmap$tree_row
+  
+  cut_height <- 15
+  
+  cluster_assignments <- cutree(row_clust, h = cut_height)
+  
+  annotation_row <- data.frame(Cluster = as.factor(cluster_assignments))
+  rownames(annotation_row) <- names(cluster_assignments)
+  
+  num_clusters <- length(unique(cluster_assignments))
+  cluster_colors <- setNames(palette.colors(num_clusters, palette = "Okabe-Ito"),
+                             as.character(sort(unique(cluster_assignments))))
+  annotation_row_colors <- list(Cluster=cluster_colors)
+  
+  heatmap <- pheatmap(t(df_assay),
+             clustering_distance_rows = "euclidean",
+             clustering_method = "ward.D2",
+             cluster_rows = row_clust,
+             cluster_cols = TRUE,
+             annotation_col = annotation_col,
+             annotation_row = annotation_row,
+             annotation_colors = c(annotation_colors, annotation_row_colors),
+             scale='row',
+             show_rownames = row_names,
+             show_colnames = TRUE,
+             main = paste0(assay_name))
+  
+  
+  assay_name <- strsplit(assay_name, "\\|")[[1]][1]
+  assay_name <- gsub(" ", "", assay_name)
+  full_path <- file.path(outdir, 'Heatmap', sub_dir)
+  if (!dir.exists(full_path)) {
+    dir.create(full_path, recursive = T)
+  }
+  file_path <- file.path(full_path, paste0(assay_name, '.png'))
+  ggsave(file_path, heatmap,
+      width = 25.04, height = 17.46, units = "cm", dpi = 300)
+  
+  
+  # Write cluste features to .csv
+  cluster_features <- data.frame(annotation_row)
+  file_path <- file.path(full_path, paste0('Clusters_', assay_name, '.csv'))
+  write.csv(cluster_features, file_path)
+  
+  return(heatmap)
+  
+}
+  
+```
+
+
+```{r, fig.width=10}
+heatmap_sign_features('EMseq | 100,000 most variable CpG sites', row_names = FALSE, Features_sign$feature, sub_dir = 'Sign')
+```
+
+
+```{r, fig.width=10}
+heatmap_sign_features('Proteomics', row_names = T, Features_sign$feature, sub_dir = 'Sign')
+```
+
+
+```{r, fig.width=10}
+heatmap_sign_features('Metabolomics, TML', row_names = T, Features_sign$feature, sub_dir = 'Sign')
+```
+
+
+```{r, fig.width=10}
+heatmap_sign_features('RNAseq | Deseq', row_names = T, Features_sign$feature, sub_dir = 'Sign')
+```
+
+
+## Same heatmaps, but with top 50 ranked features (even if they are not significant)
+
+```{r, fig.width=10}
+get_top_features <- function(assay_name, top_n) {
+  MixedModel_assay <- MixedModel[MixedModel$Assay == assay_name,]
+  MixedModel_assay <- MixedModel_assay[order(MixedModel_assay$p.value),]
+  features <- MixedModel_assay[c(1:top_n), 'feature']
+  return(features)
+}
+
+assay_names <- unique(MixedModel$Assay)
+lapply(assay_names, function(x) {
+  print(heatmap_sign_features(x, row_names = T, get_top_features(x, 50), sub_dir = 'Top50'))
+})
+```
+
+
+## Top 100 ranked features
+```{r, fig.width=10}
+lapply(assay_names, function(x) {
+  print(heatmap_sign_features(x, row_names = T, get_top_features(x, 100), sub_dir = 'Top100'))
+})
+```
+
+
+## Heatmap of Lipidomics data including Class annotations
+```{r}
+assay_name <- "Lipidomics, Targeted | imputed | log" 
+omics_features <- get_top_features(assay_name, 50)
+
+# Select these proteins in measurement data
+se <- experiments(mae)[[assay_name]]
+df_assay <- as.data.frame(t(assays(se)[[1]]))
+df_assay <- df_assay[,names(df_assay) %in% omics_features]
+# Remove X in 409B sample names
+rownames(df_assay) <- gsub("X", "", rownames(df_assay))
+sorted_samples_sub <- sorted_samples[sorted_samples %in% rownames(df_assay)]
+df_assay <- df_assay[sorted_samples_sub,]
+  
+annotation_col <- data.frame(Group = pheno_df$phenotype)
+rownames(annotation_col) <- sorted_samples
+  
+color_palette <- palette.colors(palette = 'Okabe-Ito')
+  
+annotation_colors <- list(
+  Group = c('Diseased: CHD2' = color_palette[[3]],
+            'Diseased: CHD2 CRISPR' = color_palette[[2]],
+            'Diseased: DM1' = color_palette[[4]],
+            'Diseased: NANS-CDG' = color_palette[[7]],
+            'Healthy' = color_palette[[5]],
+            'Rescue: repeat excised CRISPR DM1' = color_palette[[6]])
+)
+  
+distance_matrix <- as.matrix(as.dist(df_assay))
+heatmap <- pheatmap(t(df_assay),
+         clustering_distance_rows = "euclidean",
+         clustering_method = "ward.D2",
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         annotation_col = annotation_col,
+         #annotation_row = annotation_row,
+         annotation_colors = annotation_colors,
+         scale='row',
+         show_rownames = row_names,
+         show_colnames = TRUE,
+         main = paste0(assay_name))
+  
+# Check which features cluster together
+row_clust <- heatmap$tree_row
+  
+cut_height <- 15
+  
+cluster_assignments <- cutree(row_clust, h = cut_height)
+  
+annotation_row <- data.frame(Cluster = as.factor(cluster_assignments))
+rownames(annotation_row) <- names(cluster_assignments)
+  
+num_clusters <- length(unique(cluster_assignments))
+cluster_colors <- setNames(palette.colors(num_clusters, palette = "Okabe-Ito"),
+                           as.character(sort(unique(cluster_assignments))))
+annotation_row_colors <- list(Cluster=cluster_colors)
+  
+heatmap <- pheatmap(t(df_assay),
+           clustering_distance_rows = "euclidean",
+           clustering_method = "ward.D2",
+           cluster_rows = row_clust,
+           cluster_cols = TRUE,
+           annotation_col = annotation_col,
+           annotation_row = annotation_row,
+           annotation_colors = c(annotation_colors, annotation_row_colors),
+           scale='row',
+           show_rownames = row_names,
+           show_colnames = TRUE,
+           main = paste0(assay_name))
+```
+
+

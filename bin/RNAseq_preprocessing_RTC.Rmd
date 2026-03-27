@@ -1,0 +1,177 @@
+---
+title: "RNAseq pre-processing comparison"
+output: html_document
+params:
+  mrna_read_data: Z:/data/iPSC_data/iPSC_RNAseq/iPSC_RTC/RawCounts/
+  outdir: Z:/data/iPSC_data/iPSC_MAE
+ 
+---
+
+## Normalize read count with edgeR data according to UMCUGenetics/RNASeq and custom scripts.
+
+#### Script parameters
+```{r}
+#print(Sys.Date())
+print(params)
+```
+
+## Read .txt files
+```{r}
+setwd(params$mrna_read_data)
+txt_files <- list.files( pattern = "\\counts.txt$")
+counts_tables <- lapply(txt_files, function(x) {
+ df <- read.table(x, sep = '\t', header = F, stringsAsFactors = F)
+ colnames(df) <- c("Key", "Value")
+ 
+ named_vec <- setNames(df$Value, df$Key)
+})
+
+mrna_read_data <- as.data.frame(do.call(rbind, counts_tables))
+rownames(mrna_read_data) <- sub("\\.counts.txt$", "", txt_files)
+
+## Select actual count value columns
+cols_data <- startsWith(x = colnames(mrna_read_data), prefix = 'ENS')
+mrna_read_data <- mrna_read_data[,cols_data]
+```
+
+
+### Libraries
+```{r}
+library(edgeR)
+suppressMessages(library(DESeq2))
+```
+
+
+### Sample metadata from ISA files
+```{r}
+isa_sample <- readxl::read_xlsx('C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240514_Xomics iPSC Neurons_new_READ-ONLY.xlsx', sheet = 7)
+
+## Fix wrong CRISPR line sample names
+isa_sample[isa_sample$`assay identifier` == 'DM1-p2c1rep-RNA-1_1',1] <- 'DM1-p1c1rep-RNA-1_1'
+isa_sample[isa_sample$`assay identifier` == 'DM1-p2c1rep-RNA-2_1',1] <- 'DM1-p1c1rep-RNA-2_1'
+
+isa_sample$temp_col <- isa_sample$`assay identifier`
+temp_values <- gsub("_1", "", isa_sample$temp_col)
+isa_sample$temp_col <- temp_values
+
+## Fix typo CDH2 --> CHD2
+temp_values <- gsub("CDH2", "CHD2", rownames(mrna_read_data))
+
+## Fix wrong CRISPR line sample names
+temp_values[temp_values == 'DM1-p2c1rep-RNA-1'] <- 'DM1-p1c1rep-RNA-1'
+temp_values[temp_values == 'DM1-p2c1rep-RNA-2'] <- 'DM1-p1c1rep-RNA-2'
+rownames(mrna_read_data) <- temp_values
+
+isa_sample <- isa_sample[isa_sample$temp_col %in% rownames(mrna_read_data),]
+isa_sample$SampleID <- isa_sample$temp_col
+isa_sample$ObsID <- isa_sample$`sample identifier`
+
+## Add SampleId as rownames
+rownames(isa_sample) <- isa_sample$SampleID
+
+## Match order or rows
+isa_sample <- isa_sample[match(rownames(mrna_read_data), rownames(isa_sample)),]
+rownames(isa_sample) <- isa_sample$SampleID
+```
+
+
+## Remove features with only 0
+```{r}
+no_zero_columns <- colSums(mrna_read_data) !=0
+mrna_read_data <- mrna_read_data[, no_zero_columns]
+```
+
+
+## Normalize with CPM
+```{r}
+mrna_read_data <- data.frame(t(mrna_read_data))
+colnames(mrna_read_data) <- temp_values
+cpm_data <- cpm(mrna_read_data)
+```
+
+
+#### Filter lowly expressed genes based on CPM
+```{r}
+# Determine which in the CPM data frame are larger than 0.5
+threshold <- cpm_data > 0.5
+
+# Keep genes have 2 TRUE in each row
+keep <- rowSums(threshold) >= 3
+counts.keep <- mrna_read_data[keep,]
+dim(counts.keep)
+```
+
+
+## Normalize read count with DESeq2, again compare UMCUGenetics and custom script
+
+#### Pre-processing from UMCUGenetics/RNASeq-NF
+```{r}
+dds = DESeqDataSetFromMatrix(counts.keep, colData = isa_sample, design = ~ ObsID)
+dds <- estimateSizeFactors(dds, type='ratio')
+dds <- estimateDispersions(dds)
+vst_data <- as.data.frame(assay(vst(dds, blind = F)))
+
+dim(vst_data)
+```
+
+
+### Plot distributions
+```{r}
+source('support_functions/PlotDistributions2.R')
+#PlotDistributions(cds.norm, type = 'hist', main_title = 'DESeq UMCU' )
+PlotDistributions(vst_data, type = 'hist', main_title = 'DESeq VST (custom)' )
+```
+
+### Boxplots per sample
+```{r}
+source('support_functions/BoxplotSamples.R')
+vst_data <- data.frame(t(vst_data))
+vst_data$Sample_ID <- rownames(vst_data)
+boxplot_samples(vst_data, 'RNAseq')
+vst_data$Sample_ID <- NULL
+```
+
+## Save RTC data to MAE folder
+```{r}
+write.csv(vst_data, 'Z:/data/iPSC_data/iPSC_MAE/mrna_deseq_rt_vst.csv')
+```
+
+
+## Compare UMCU and RTC pipelines
+```{r}
+mrna_umcu <- read.csv('Z:/data/iPSC_data/iPSC_MAE/mrna_deseq_log.csv', row.names = 1)
+intersection_samples <- intersect(rownames(mrna_umcu), rownames(vst_data))
+intersection_feature <- intersect(colnames(mrna_umcu), colnames(vst_data))
+
+mrna_umcu_other <- mrna_umcu[intersection_samples, !colnames(mrna_umcu) %in% intersection_feature]
+mrna_umcu <- mrna_umcu[intersection_samples, intersection_feature]
+vst_data_compare <- vst_data[intersection_samples, intersection_feature]
+
+
+plot_df <- data.frame(
+  umcu = as.vector(as.matrix(mrna_umcu)),
+  rtc = as.vector(as.matrix(vst_data_compare))
+)
+
+library(viridis)
+library(ggpointdensity)
+ggplot(plot_df, aes(x = umcu, y = rtc)) +
+  #geom_pointdensity() +
+  geom_hex(bins=50) +
+  #geom_abline(slope = 1, intercept = 0, color='red', linetype='dashed') +
+  scale_fill_viridis()
+```
+
+## Save Ensembl IDs which ae not in RTC data
+```{r}
+write.csv(mrna_umcu_other, 'Z:/users/devissercasper/mrna_other_features.csv')
+```
+
+
+
+
+
+```{r}
+sessionInfo()
+```
+

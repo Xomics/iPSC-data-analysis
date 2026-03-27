@@ -1,0 +1,154 @@
+---
+title: "DMR_clones"
+output: html_document
+date: "2025-06-16"
+params:
+  methrix_qc_dir: Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_QC_SNP_filtered/
+  isa_path: C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240822_Xomics_iPSC_Neurons_new_READ-ONLY.xlsx
+  outdir: Z:/data/iPSC_data/Results/DMR/
+---
+
+
+## Libaries
+```{r}
+library(DSS)
+```
+
+
+```{r}
+print(params)
+```
+
+
+```{r}
+outdir <- params$outdir
+
+if (!dir.exists(outdir)){
+  outdir <- getwd()
+}
+```
+
+
+## Complete set of QC Methrix object
+```{r}
+meth_object <- methrix::load_HDF5_methrix(params$methrix_qc_dir)
+```
+
+
+## Subset DM1 P2 samples
+```{r}
+all_samples <- meth_object@colData@rownames
+DM1_P2_samples <- all_samples[grepl(pattern = 'DM1-p2', all_samples)]
+### !! Remove Repeat excised sample !! ###
+DM1_P2_samples <- DM1_P2_samples[!grepl(pattern = 'rep', DM1_P2_samples)]
+
+subset_meth <- meth_object[, DM1_P2_samples]
+```
+
+
+## bs object
+```{r}
+bs_obj <- methrix::methrix2bsseq(subset_meth)
+bs_obj
+```
+
+## DM1 Design matrix (clones, CRISPR line with clone 1)
+```{r}
+clone <- c('clone1', 'clone1', 
+            'clone2', 'clone2', 'clone2',
+            'clone3', 'clone3', 'clone3')
+
+clone1_vs_others <- c('clone1', 'clone1', 
+           'other', 'other', 'other',
+           'other', 'other', 'other')
+
+clone2_vs_others <- c('other', 'other', 
+           'clone2', 'clone2', 'clone2',
+           'other', 'other', 'other')
+
+clone3_vs_others <- c('other', 'other',
+           'other', 'other', 'other',
+           'clone3', 'clone3', 'clone3')
+
+
+design <- data.frame(clone = factor(clone), 
+                     c1_vs_other = factor(clone1_vs_others),
+                     c2_vs_other = factor(clone2_vs_others),
+                     c3_vs_other = factor(clone3_vs_others))
+design$clone <- relevel(design$clone, ref = "clone2")
+```
+
+
+## Clone vs others
+```{r}
+#dmr_c1_fit <- DMLfit.multiFactor(BSobj = bs_obj, design = design, formula = ~ clone1_vs_others)
+dmr_c2_fit <- DMLfit.multiFactor(BSobj = bs_obj, design = design, formula = ~ clone2_vs_others)
+#dmr_c3_fit <- DMLfit.multiFactor(BSobj = bs_obj, design = design, formula = ~ clone3_vs_others)
+```
+
+## DML 
+```{r}
+#dml_c1_test <- DMLtest.multiFactor(dmr_c1_fit, coef = "clone1_vs_othersother" )
+dml_c2_test <- DMLtest.multiFactor(dmr_c2_fit, coef = "clone2_vs_othersother" )
+#dml_c3_test <- DMLtest.multiFactor(dmr_c3_fit, coef = "clone3_vs_othersother" )
+```
+
+
+## Differentially metylated regions (DMRs)
+```{r}
+#dmrs_c1 <- DSS::callDMR(dml_c1_test, p.threshold = 0.001)
+dmrs_c2 <- DSS::callDMR(dml_c2_test, p.threshold = 0.001)
+#dmrs_c3 <- DSS::callDMR(dml_c3_test, p.threshold = 0.001)
+
+
+#write.csv(dmrs_c1, file.path(outdir, 'DMRS_DM1_c1.csv'))
+write.csv(dmrs_c2, file.path(outdir, 'DMRS_DM1_c2.csv'))
+#write.csv(dmrs_c3, file.path(outdir, 'DMRS_DM1_c3.csv'))
+```
+
+
+
+# CHD2 clones
+
+## Subset DM1 P2 samples
+```{r}
+CDH2_P3_samples <- all_samples[grepl(pattern = 'CHD2-p3', all_samples)]
+subset_meth <- meth_object[, CDH2_P3_samples]
+```
+
+## CHD2 Design matrix (clones, CRISPR line with clone 1)
+```{r}
+clone <- c('clone1', 'clone1', 'clone1',
+            'clone2', 'clone2')
+
+design <- data.frame(clone = factor(clone))
+```
+
+## bs object
+```{r}
+bs_obj <- methrix::methrix2bsseq(subset_meth)
+bs_obj
+```
+
+## Clone 2 vs others
+```{r}
+dmr_fit <- DMLfit.multiFactor(BSobj = bs_obj, design = design, formula = ~ clone)
+```
+
+## DML test clone 1 vs clone 2
+```{r}
+dml_test <- DMLtest.multiFactor(dmr_fit, coef = "cloneclone2" )
+```
+
+
+## Model output
+```{r}
+dmls <- DSS::callDML(dml_test, p.threshold = 0.001)
+```
+
+```{r}
+dmrs <- DSS::callDMR(dml_test, p.threshold = 0.001)
+
+write.csv(dmrs, file.path(outdir, 'DMRS_CHD2.csv'))
+```
+

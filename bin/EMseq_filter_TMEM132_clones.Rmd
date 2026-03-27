@@ -1,0 +1,216 @@
+---
+title: "Methrix"
+output: html_document
+params:
+    methrix_dir: Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_raw/
+    methrix_qc_dir: Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_QC_SNP_filtered/
+    outdir: Z:/data/iPSC_data/results/DMPK_Methylation/
+    mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+---
+
+```{r}
+library(methrix)
+```
+
+
+```{r}
+print(params)
+```
+
+
+## Read in Methrix object from shared disk
+```{r}
+meth <- methrix::load_HDF5_methrix(params$methrix_dir)
+```
+
+
+## Select ISA file to get correct sample IDs
+```{r}
+isa_assay_prot <- readxl::read_xlsx('C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240822_Xomics_iPSC_Neurons_new_READ-ONLY.xlsx', sheet = 'Assay - proteomics')
+```
+
+```{r}
+library(MultiAssayExperiment)
+library(HDF5Array)
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+
+phenotype_data <- as.data.frame(colData(mae))
+```
+
+```{r}
+feature_metadata <- elementMetadata(meth_subset)
+feature_metadata <- as.data.frame(feature_metadata)
+rownames(feature_metadata) <- paste0(feature_metadata$chr, '_', feature_metadata$start)
+  
+## Measurement data
+beta_values_df <- assays(meth_subset)[[1]]
+
+DMR_list <- read.csv('Z:/data/iPSC_data/Results/DMR/DMRS_DM1_c2.csv', row.names = 1)
+
+## GRanges objects
+regions_gr <- GRanges(
+  seqnames = DMR_list$chr,
+  ranges = IRanges(start = DMR_list$start, end = DMR_list$end)
+)
+
+coords_gr <- GRanges(
+  seqnames = feature_metadata$chr,
+  ranges = IRanges(start = feature_metadata$start, end = feature_metadata$start)
+)
+
+overlaps <- findOverlaps(coords_gr, regions_gr)
+
+result <- data.frame(
+  coord_idx = queryHits(overlaps),
+  region_idx = subjectHits(overlaps),
+  chr = as.character(seqnames(coords_gr[queryHits(overlaps)])),
+  pos = start(coords_gr[queryHits(overlaps)]),
+  region_start = start(regions_gr[subjectHits(overlaps)]),
+  region_end = end(regions_gr[subjectHits(overlaps)])
+)
+
+feature_metadata$coord_idx <- 1:nrow(feature_metadata)
+result <- merge(result, feature_metadata, by='coord_idx')
+```
+
+
+
+
+## Select TMEM132 region
+```{r}
+meth_subset <- methrix::subset_methrix(m = meth, regions = data.table(chr='chr12', start = 128266420, end =129904700))
+```
+```{r}
+read_meth2df <- function(meth, isa_assay) {
+  
+  ## Feature metadata
+  feature_metadata <- elementMetadata(meth)
+  feature_metadata <- as.data.frame(feature_metadata)
+  rownames(feature_metadata) <- paste0(feature_metadata$chr, '_', feature_metadata$start)
+  
+  ## Measurement data
+  beta_values_df <- assays(meth)[[1]]
+  
+  ## Feature names
+  rownames(beta_values_df) <- rownames(feature_metadata)
+  
+  ## Re-format sample names
+  new_samples_names <- gsub( "WI-3791-", "", colnames(beta_values_df))
+  new_samples_names <- gsub( "Epigenomics", "Proteomics", new_samples_names)
+  new_samples_names <- gsub( "_1_val_1_bismark_bt2_pe", "", new_samples_names)
+  new_samples_names <- gsub( "-", "_", new_samples_names)
+  
+  ## Get universal names by mapping to ISA file
+  isa_assay <- isa_assay[!duplicated(isa_assay$`assay identifier`),]
+  universal_names_meth <- lapply(new_samples_names, function(x) {
+    name_uni <- isa_assay[isa_assay$`assay identifier` == x, "sample identifier"]
+    bio_rep <- isa_assay[isa_assay$`assay identifier` == x, "biological replicate"]
+    name_uni <- paste0(name_uni, "_", bio_rep)
+    name_uni
+  })
+  beta_values_df <- data.frame(beta_values_df)
+  colnames(beta_values_df) <- as.character(universal_names_meth)
+  colnames(beta_values_df) <- gsub( "-", "_", colnames(beta_values_df))
+  colnames(beta_values_df) <- gsub( "409B", "X409B", colnames(beta_values_df))
+  
+  return(list(beta_values_df, feature_metadata)) 
+}
+```
+
+
+## Combine with pheno df
+```{r}
+#source('support_functions/ReadMethrix2Df.R')
+df_list <- read_meth2df(meth_subset, isa_assay_prot)
+df <- data.frame(t(df_list[[1]]))
+
+phenotype_data <- phenotype_data[rownames(df),]
+
+df$Phenotype <- phenotype_data$phenotype
+df$Sample <- phenotype_data$observation.unit.identifier.crispr
+df$Clone <- phenotype_data$sample.description
+```
+
+
+## Only keep DM1 P2 clones 
+```{r}
+Sample_Subset <- c('DM_2', 'CTRL_Sendai', 'CTRL_WTC', 'CTRL_409B')
+
+df <- df[df$Sample %in% Sample_Subset,]
+df <- df[rownames(df) != 'NA',]
+```
+
+
+## Plot methylation in the DMPK region
+```{r, fig.width=15, fig.height=4}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+
+## Chromosome 12
+df_long <- df %>%
+  pivot_longer(
+    cols = starts_with("chr12_"),
+    names_to = "Genome_Location",
+    values_to = "Measurement"
+  ) %>%
+  mutate(Genome_Location = as.numeric(gsub("chr12_", "", Genome_Location)))
+
+df_avg_Sample <- df_long %>%
+  group_by(Clone, Genome_Location) %>%
+  summarize(Avr_Beta =  mean(Measurement), .groups= "drop")
+
+## Save to compare with iPSC stage measurements
+#write.csv(df_avg_Sample, 'Z:/data/iPSC_data/Results/DMR/Avg_Meth_TMEM132.csv')
+```
+
+
+## Heatmap
+```{r}
+library(pheatmap)
+ggp <- pheatmap(
+  df[,c(1:216)],
+  cluster_rows = T,
+  cluster_cols = F,
+  show_colnames = F,
+  show_rownames = T
+)
+ggp
+```
+
+
+## Plot function
+```{r}
+source('support_functions/plot_DMR.R')
+
+ggp <- plot_DMR(df_avg_Sample, 128266425, 128268660, 'TMEM132C')
+ggsave('Z:/data/iPSC_data/Results/DMR/Clones_TMEM132C.pdf', ggp, width=16, height =4)
+```
+
+
+## TMEM132D
+```{r, fig.width=17, fig.height=4}
+ggp <- plot_DMR(df_avg_Sample, 129902900, 129904700, 'TMEM132D') 
+
+ggsave('Z:/data/iPSC_data/Results/DMR/Clones_TMEM132D.pdf', ggp, width=16, height =4)
+```
+
+
+## Heatmap
+```{r}
+library(pheatmap)
+ggp <- pheatmap(
+  df[,c(21162:21339)],
+  cluster_rows = T,
+  cluster_cols = F,
+  show_colnames = F,
+  show_rownames = T
+)
+ggp
+```
+
+

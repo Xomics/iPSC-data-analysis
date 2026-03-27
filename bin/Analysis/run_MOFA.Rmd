@@ -1,0 +1,541 @@
+---
+title: 'Multi-omics Factor Analysis (MOFA)'
+author:
+- Casper de Visser^[Radboud university medical center, casper.devisser@radboudumc.nl]
+output:
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  outdir: Z:/data/iPSC_data/results/MOFA
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  neuron_markers: Z:/data/iPSC_data/Markers_files/Neuron_markers.csv
+  config_file: 'config.yml'
+---
+
+This notebook performs Multi-omics Factor Analysis (MOFA) [@Argelaguet2018,@Argelaguet2020] on preprocessed data. 
+
+MOFA is an unsupervised method that uncovers main sources of variation in multi-omics data. It allows to identify variation shared across omics data types or specific to individual omics data types. 
+Subsequent to MOFA, correlation between MOFA factors and phenotypic information is determined to identify possible biological factors contributing to the observed variation.
+
+
+```{r show_parameters}
+print(params)
+dir.create(params$outdir)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!dir.exists(outdir)){
+    outdir <- getwd()
+}
+
+## Create subdirectory for All analyzing all samples together
+outdur_disease <- file.path(outdir, 'All_Samples')
+dir.create(outdur_disease)
+```
+
+
+## Libraries
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(rstatix)
+library(ggokabeito)
+library(MOFA2)
+library(data.table)
+library(ggrepel)
+library(pheatmap)
+```
+
+
+## Read input data
+
+Input data is a MultiAssayExperiment (MAE) object. All or specified assays in the MAE will be used for analysis Multi-omics Factor Analysis (MOFA).
+
+```{r read_input_data, message=FALSE}
+library(MultiAssayExperiment)
+library(HDF5Array)
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+
+```
+
+
+Omics to be included in MOFA
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+## Assay selection
+```{r}
+assay_names <- config$experiment_names$general_selection
+#assay_names <- config$experiment_names$Annotated_data
+names(assay_names) <- assay_names
+assay_names
+```
+
+
+## Prepare phenotype data
+```{r}
+phenotype_data <- as.data.frame(colData(mae)) %>%
+  tibble::rownames_to_column("sample") %>%
+  mutate(
+    Disease = if_else(startsWith(phenotype, "Diseas"), "Disease", "Healthy"),
+    phenotype_CHD2_CRISPR = recode(
+      phenotype,
+      'Diseased: CHD2 CRISPR' = 'Diseased: CHD2'
+    ),
+    phenotype_CRISPRS_both = recode(
+      phenotype_CHD2_CRISPR,
+      'Rescue: repeat excised CRISPR DM1' = 'Healthy'
+  )
+  ) %>%
+  mutate(across(where(is.character), as.factor))
+```
+
+
+## Multi-omics factor analysis (MOFA)
+
+For running MOFA, it is recommended to first remove known batch effects. 
+Make sure to use input data that were adjusted for batch effect if necessary.
+
+## Shorter readable omics names
+```{r}
+shoter_names <- config$experiment_names$shorter_names
+shoter_names
+```
+
+
+Include custom MOFA functions
+```{r}
+source_paths <- c(
+  "../support_functions/MOFA_functions.R",      # when running in Rstudio
+  "support_functions/MOFA_functions.R"                    # when running in Nextflow
+)
+
+for (path in source_paths) {
+  if (file.exists(path)) {
+    source(path)
+    break
+  }
+}
+```
+
+
+Prepare MOFA input data: create a long data frame with sample, feature, view, 
+[group], and value. 
+
+```{r prepare_mofa_input}
+mofa_input <- mae_to_MOFAinput(mae)
+mofa_input$value <- as.numeric(mofa_input$value)
+```
+
+
+Create the MOFA object
+
+```{r create_mofa_object}
+MOFAobject <- create_mofa(mofa_input)
+print(MOFAobject)
+```
+
+
+Plot views available in MOFA object (N = number of samples, D = number of 
+features per view)
+
+```{r show_mofa_modalities}
+require(ggplot2)
+ggp <- plot_data_overview(MOFAobject)
+
+ggsave(file.path(outdur_disease, "MOFA_modality_overview.pdf"), 
+       ggp, width = 15, height = 10.46, units = "cm", dpi = 300)
+
+ggp
+```
+
+
+Get parameters of MOFA object
+
+```{r}
+data_opts <- get_default_data_options(MOFAobject)
+data_opts
+```
+
+Set number of factors. This parameter can have a large impact on the results.
+
+```{r}
+model_opts <- get_default_model_options(MOFAobject)
+model_opts$num_factors <- 6
+model_opts
+```
+
+
+```{r}
+train_opts <- get_default_training_options(MOFAobject)
+train_opts
+```
+
+Prepare MOFA object for training using the parameters specified above
+
+```{r}
+MOFAobject <- prepare_mofa(
+  object = MOFAobject,
+  data_options = data_opts,
+  model_options = model_opts,
+  training_options = train_opts
+)
+```
+
+
+**NOTE:** `mofa2` requires a Python installation with `mofapy2`
+
+`mofapy2` can be installed from PyPi using conda:
+
+```
+conda create -n mofapy2 python pip
+conda activate mofapy2
+pip install mofapy2
+```
+
+In case of computing environments without internet access, the conda environment
+can be created on a computer with internet and pip dependencies for `mofapy2`
+can be downloaded:
+
+```
+pip list --format=freeze > requirements.txt
+pip download -r requirements.txt
+```
+
+After uploading the dependencies to the environment without internet access,
+`mofapy2` can be installed with pip defining the path to the package wheel:
+
+```
+pip install --no-index --find-links Z:/software/pip Z:/software/pip/mofapy2-0.6.7-py3-none-any.whl
+```
+
+The conda environment with Python can now be used by `reticulate` in R.
+
+```{r define_python_version}
+#reticulate::use_condaenv(condaenv = "mofapy")
+reticulate::use_python("/usr/bin/python3", required = T)
+```
+
+Train the MOFA model
+
+```{r run_mofa, message=FALSE}
+#outdir <- params$outdir
+#outfile = file.path(outdur_disease, "model_ALL_SAMPLES_Annotated_Data.hdf5")
+#outfile = file.path(outdir, "model_ALL_SAMPLES.hdf5")
+#outfile = file.path(outdir, "model_ALL_SAMPLES_Prot_Glob_Min.hdf5")
+#MOFAobject.trained <- run_mofa(MOFAobject, outfile)
+```
+
+
+## Read in MOFA model
+```{r}
+#outfile = file.path(outdir, "model_ALL_SAMPLES.hdf5")
+#outfile = file.path(outdir, "model_ALL_SAMPLES_TotalAreaLipidTar.hdf5")
+outfile = file.path(outdir, "model_ALL_SAMPLES_Prot_Glob_Min.hdf5")
+MOFAobject.trained <- MOFA2::load_model(outfile)
+```
+
+
+
+## Visualizations of MOFA results 
+
+
+### Variance decomposition
+
+Amount of variance explained per modality (= view, = assay)
+
+```{r}
+head(MOFAobject.trained@cache$variance_explained$r2_total)
+```
+
+Amount of variance explained by each factor per modality
+
+```{r}
+head(MOFAobject.trained@cache$variance_explained$r2_per_factor)
+```
+
+Plot amount of variance explained by each factor per modality
+
+```{r, fig.width=10, fig.height=5}
+expl_var <- c(
+  get_variance_explained(MOFAobject.trained)$r2_per_factor$single_group)
+
+ggp <- plot_variance_explained(MOFAobject.trained) +
+  geom_text(
+    label = round(expl_var, 2),
+    color = ifelse(expl_var < 0.6*max(expl_var), "black", "white")) +
+  theme(
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)
+  )
+      
+
+ggsave(file.path(outdur_disease, "MOFA_explained_variance.pdf"), 
+       ggp, width = 14, height = 10.46, units = "cm", dpi = 300)
+
+ggp
+```
+
+###  Factor correlations
+
+Plot correlations between factors. When factors are correlated (containing 
+redundant information) it is recommended to reduce the number of factors
+
+```{r}
+plot_factor_cor(MOFAobject.trained)
+```
+
+### Factor weights
+
+Plot feature weights per factor and assay
+
+```{r}
+num_factors <- nrow(
+  MOFAobject.trained@cache$variance_explained$r2_per_factor[[1]])
+view_names <- names(MOFAobject.trained@data)
+
+lapply(1:5, function(f) {
+ lapply(view_names, function(a) {
+   plot_weights(
+      MOFAobject.trained,
+      view = a,
+      factor = f,
+      nfeatures = 10
+      )+ ggtitle(paste0(a))
+  }) 
+})
+```
+
+
+Top weights per factor and assay
+
+```{r}
+lapply(1:2, function(f) { 
+  lapply(view_names, function(a) {
+    ggp <- plot_top_weights(
+      MOFAobject.trained,
+      view = a,
+      factor = f,
+      nfeatures = 10
+    ) + ggtitle(paste0(a))
+    file.out <- paste0('Factor', f, '_', a, '.png')
+    ggsave(file.path(outdur_disease, file.out), ggp)
+  })
+})
+```
+
+
+# Compare disease groups on MOFA scores
+
+Add phenotype data to MOFA object
+```{r}
+samples_metadata(MOFAobject.trained) <- phenotype_data
+```
+
+
+Plot MOFA scores per category
+```{r}
+plot_factor_category <- function(MOFAobject.trained, 
+                                 var, 
+                                 excluded_categories = c(),
+                                 num_factors = NULL) {
+  
+    
+  if (is.factor(MOFAobject.trained@samples_metadata[[var]])) {
+    original_categories <- levels(MOFAobject.trained@samples_metadata[[var]])
+  } else {
+    original_categories <- levels(
+      as.factor(MOFAobject.trained@samples_metadata[[var]]))
+  }
+  
+  categories <- original_categories[
+    !original_categories %in% excluded_categories]
+  if (length(categories) > 1) {
+    comparisons <- as.list(as.data.frame(combn(categories, 2)))
+  }
+  
+  num_factors <- ifelse(
+    is.null(num_factors),
+    nrow(MOFAobject.trained@cache$variance_explained$r2_per_factor[[1]]),
+    num_factors)
+  
+  ggp <- plot_factor(
+    MOFAobject.trained,
+    factor = 1:num_factors,
+    color_by = var,
+    dodge = TRUE,
+    add_boxplot = TRUE) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+          panel.spacing = unit(0, "lines")) 
+  
+  #ggp$data$color_by <- as.factor(ggp$data$color_by)
+  ggp$data$group_by <- ggp$data$color_by
+  
+  add_stat <- TRUE
+  if (length(categories) > 2) {
+    # kruskal wallis
+    stat_method <- "Kruskal-Wallis"
+    stat_test <- ggp$data %>%
+      filter(!color_by %in% excluded_categories) %>%
+      group_by(factor) %>%
+      kruskal_test(value ~ group_by) %>%
+      adjust_pvalue(method = "fdr") 
+    
+    stat_test_pairwise <- ggp$data %>%
+      filter(!color_by %in% excluded_categories) %>%
+      group_by(factor) %>%
+      dunn_test(value ~ group_by, p.adjust.method = "fdr") %>%
+      add_y_position()
+  } else if (length(categories) == 2) {
+    # wilcoxon
+    stat_method <- "Wilcoxon"
+    stat_test <- stat_test_pairwise <- ggp$data %>%
+      group_by(factor) %>%
+      wilcox_test(value ~ group_by, comparisons = comparisons) %>%
+      adjust_pvalue(method = "fdr") %>%
+      add_significance() %>%
+      add_y_position()
+  } else {
+    add_stat <- FALSE
+  }
+  ggp <- ggp + scale_fill_okabe_ito(
+    breaks = original_categories,
+    labels = original_categories)
+  ggp
+}
+```
+
+
+Get Sample scores and save as csv
+```{r}
+scores_df <- get_factors(MOFAobject.trained, factors = "all", as.data.frame = T)
+
+wide_df <- scores_df |>
+  select(-group) |>
+  pivot_wider(
+    names_from = factor,
+    values_from = value
+  )
+
+wide_df<- wide_df %>%
+    left_join(phenotype_data)
+
+
+## Shorter name for DM1 CRISPR line
+levels(wide_df$phenotype) <- c(levels(wide_df$phenotype), "CRISPR DM1")
+wide_df$phenotype[wide_df$phenotype == 'Rescue: repeat excised CRISPR DM1'] <- 'CRISPR DM1'
+
+
+write.csv(wide_df, file.path(outdur_disease, "SampleScores.csv"), row.names = F)
+```
+
+### Factor 1 vs 2
+```{r, fig.width=12}
+ggp <- Factor_scores_plot(wide_df, Col1 = 'Factor1', Col2 = 'Factor2', )
+ggsave(filename = file.path(outdur_disease, "SampleScores_F1F2.pdf"), ggp, width = 10, height = 7)
+ggp
+```
+
+
+### Factor 3 vs 4
+```{r, fig.width=12}
+ggp <- Factor_scores_plot(wide_df, Col1 = 'Factor3', Col2 = 'Factor4', )
+ggsave(filename = file.path(outdur_disease, "SampleScores_F3F4.pdf"), ggp, width = 10, height = 7)
+ggp
+```
+
+
+### Factor 5 vs 6
+```{r}
+ggp <- Factor_scores_plot(wide_df, Col1 = 'Factor5', Col2 = 'Factor6', )
+ggsave(filename = file.path(outdur_disease, "SampleScores_F5F6.pdf"), ggp, width = 10, height = 7)
+ggp
+```
+
+
+```{r, fig.width=10, fig.height=5}
+ggp <- plot_factor_category(MOFAobject.trained, "phenotype", num_factors = 2)
+
+# ggsave(file.path(outdur_disease, "MOFA_factors_vs_Age.group.png"), 
+#        ggp, width = 28.04, height = 10.46, units = "cm", dpi = 300)
+ggp
+```
+
+```{r, fig.width=15, fig.height=5}
+# ggp <- plot_factor_category(MOFAobject.trained, "phenotype_CHD2_CRISPR")
+# 
+# # ggsave(file.path(outdur_disease, "MOFA_factors_vs_Age.group.png"), 
+# #        ggp, width = 28.04, height = 10.46, units = "cm", dpi = 300)
+# ggp
+```
+
+
+
+```{r}
+ggp <- plot_factor_category(MOFAobject.trained, "sex")
+
+# ggsave(file.path(outdur_disease, "MOFA_factors_vs_Age.group.png"), 
+#        ggp, width = 28.04, height = 10.46, units = "cm", dpi = 300)
+ggp
+```
+
+Save loadings to Excel or CSV
+```{r}
+MOFA_weights <- get_weights(MOFAobject.trained)
+names(MOFA_weights) <- assay_names
+
+lapply(assay_names, function(a) {
+ df <- cbind(MOFA_weights[[a]], data.frame(rowData(mae[[a]])))
+ df$feature <- rownames(df)
+ f <- gsub("[| ,]", "_", a)
+ write.csv(df, file = file.path(outdur_disease,  paste0("factorweights_", f, ".csv")))
+})
+```
+
+
+## Lipidomics heatmap
+
+```{r}
+# 1. extract weights
+w <- get_weights(MOFAobject.trained, views = "Lipidomics_Targeted", factors = c(1,2))[[1]]
+# 2. merge with metadata
+lipidomics_feature_metadata <- as.data.frame(rowData(mae[["Lipidomics, Targeted | imputed | log  | TA"]]))
+df <- cbind(w, lipidomics_feature_metadata)
+
+## Subset Triglycerides
+df_noTG <- df[df$Class != "TG",] 
+df_TG <- df[df$Class == "TG",]
+
+## Function to make heatmap
+make_heatmap <- function(df){
+  ggp <- pheatmap(
+    df[,c(1,2)],
+    cluster_rows = T,
+    cluster_cols = F,
+    show_colnames = T,
+    show_rownames = F,
+    annotation_row = df[,"Class", drop = F],
+    scale = "column"
+  )
+  return(ggp)
+} 
+
+make_heatmap(df)
+make_heatmap(df_noTG)
+make_heatmap(df_TG)
+```
+
+
+```{r}
+sessionInfo()
+```
+

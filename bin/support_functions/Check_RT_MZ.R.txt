@@ -1,0 +1,39 @@
+# Function to calculate ppm tolerance
+ppm_tolerance <- function(mz1, mz2) {
+  if (is.na(mz1) || is.na(mz2)) return(NA)  # Handle NA values
+  abs(mz1 - mz2) / mz2 * 1e6  # Return difference in ppm
+}
+
+# Function to match metabolomics data with parameterized RT column
+match_metabolites <- function(data, reference, ppm_tol = 5, rt_tol = 0.10, rt_column = "RT") {
+  matched_results <- data.frame(m_z = numeric(0), RT = numeric(0), match_m_z = numeric(0), match_RT = numeric(0), ppm_diff = numeric(0), rt_diff = numeric(0))
+  
+  for (i in 1:nrow(data)) {
+    mz1 <- data$m_z[i]
+    rt1 <- data[[rt_column]][i]  # Use parameterized RT column name
+    
+    if (is.na(mz1) || is.na(rt1)) next  # Skip if any value is NA
+    
+    for (j in 1:nrow(reference)) {
+      mz2 <- reference$m_z[j]
+      rt2 <- reference[[rt_column]][j]  # Use parameterized RT column name
+      
+      if (is.na(mz2) || is.na(rt2)) next  # Skip if any value is NA
+      
+      # Calculate ppm difference and RT difference
+      ppm_diff <- ppm_tolerance(mz1, mz2)
+      rt_diff <- abs(rt1 - rt2)
+      
+      # Skip if ppm_diff or rt_diff is NA
+      if (is.na(ppm_diff) || is.na(rt_diff)) next
+      
+      # Check if both m/z and RT fall within the specified tolerances
+      if (ppm_diff <= ppm_tol && rt_diff <= rt_tol) {
+        matched_results <- rbind(matched_results, data.frame(m_z = mz1, RT = rt1, match_m_z = mz2, match_RT = rt2, ppm_diff = ppm_diff, rt_diff = rt_diff))
+      }
+    }
+  }
+  
+  return(matched_results)
+}
+

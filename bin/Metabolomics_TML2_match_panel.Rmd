@@ -1,0 +1,286 @@
+---
+title: "Metabolomics  to tabular format"
+output: html_document
+params:
+  
+  metabomics_feature_neg_metadata: Z:/data/iPSC_data/iPSC_metabolomics_TML/Processed_untargeted_metabolomics_data/231128_XCMS/XCMSR.annotated.Report_231128_ESIneg.tsv
+  metabomics_feature_pos_metadata: Z:/data/iPSC_data/iPSC_metabolomics_TML/Processed_untargeted_metabolomics_data/231120_XCMS/XCMSR.annotated.Report_231120_ESIpos.tsv
+  metabolomics_pos_data: Z:/data/iPSC_data/iPSC_metabolomics_TML/Processed_untargeted_metabolomics_data/231120_UDA/231120_ControlsvsPatients_2024-03-13_ESIpos.tsv
+  metabolomics_neg_data: Z:/data/iPSC_data/iPSC_metabolomics_TML/Processed_untargeted_metabolomics_data/231128_UDA/231128_ControlsvsPatients_2024-03-13_ESIneg.tsv
+  
+  outdir: Z:/data/iPSC_data/iPSC_MAE
+---
+
+## Read processed metabolomics data and save to tabular formats for the MultiAssayExperiment object
+
+### Libraries
+```{r}
+library(fuzzyjoin)
+library(dplyr)
+```
+
+#### Script parameters
+```{r}
+print(Sys.Date())
+print(params)
+```
+
+
+#### Functions to read data
+```{r}
+
+## Function to read metabolomics data from TML
+read_mtblcs_data_tml <- function(filepath, id_string) {
+  
+  ### Read data
+  mtblmcs_data <- read.delim(filepath, header = FALSE)
+  mtblmcs_data$V105 <- NULL
+  
+  ### Remove columns
+  colnames(mtblmcs_data) <- mtblmcs_data[3,]
+  rows <- nrow(mtblmcs_data)
+  mtblmcs_data <- mtblmcs_data[4:rows,]
+  
+  mtblmcs_data$Mass <- NULL
+  mtblmcs_data$R <- NULL
+  
+  ## Rename metabolomics features
+  feature_names <- lapply(mtblmcs_data$F, function(x) {
+    y <- paste0(id_string, x)
+    y
+  })
+  rownames(mtblmcs_data) <- feature_names
+  mtblmcs_data$F <- NULL
+  
+  return(mtblmcs_data)
+}
+
+### Save sample/filename mapping dataframe
+create_sample_metadata_df <- function(filepath) {
+  sample_mapping <- read.delim(filepath, header = FALSE)
+  sample_mapping <- sample_mapping[1:3,4:104]
+  sample_mapping <- data.frame(t(sample_mapping))
+  sample_mapping$X2 <- NULL
+  colnames(sample_mapping) <- c('File_name', 'Sample_name')
+  return(sample_mapping)
+}
+
+
+### Store Mass and Retention time in other dataframe
+create_feature_metadata_df  <- function(filepath) {
+  data <- read.delim(filepath, header = FALSE)
+  colnames(data) <- data[3,]
+  rows <- nrow(data)
+  data <- data[4:rows,]
+  feature_metadata_df <- data[, 2:3]
+  return(feature_metadata_df)
+}  
+```
+
+## Read data for positive ionization mode
+```{r}
+## measurement data
+metabolomics_pos <- read_mtblcs_data_tml(params$metabolomics_pos_data, 'TML_pos')
+
+## sample metadata
+sample_mapping <- create_sample_metadata_df(params$metabolomics_pos_data)
+
+## feature metadata
+metabolomics_features_pos_ids <- create_feature_metadata_df(params$metabolomics_pos_data)
+```
+
+
+## Read data for negative ionization mode
+```{r}
+## measurement data
+metabolomics_neg <- read_mtblcs_data_tml(params$metabolomics_neg_data, 'TML_neg')
+
+## feature metadata
+metabolomics_features_neg_ids <- create_feature_metadata_df(params$metabolomics_neg_data)
+```
+
+
+#### Feature metadata (positive)
+```{r }
+metabolomics_features_pos <- read.delim(params$metabomics_feature_pos_metadata, row.names = 1)
+columns_keep <- c("mzmed", "mzmin", "mzmax", "rtmed", 
+                  "rtmin", "rtmax", "npeaks", "X1", "ms_level",
+                  "isotopes", "adduct", "pcgroup")
+metabolomics_features_pos <- metabolomics_features_pos[ , names(metabolomics_features_pos) %in% columns_keep]
+
+## Add mass and retention time from UDA file
+metabolomics_features_pos <- cbind(metabolomics_features_pos_ids, metabolomics_features_pos)
+
+## Add feature IDs (temporarily)
+rownames(metabolomics_features_pos) <- rownames(metabolomics_pos)
+head(metabolomics_features_pos)
+print(dim(metabolomics_features_pos))
+```
+
+
+### Filter features with too much missing values
+```{r}
+library(dplyr)
+filter_na_columns <- function(data, threshold = 0.2) {
+  
+  # calculate NA values per column
+  na_proportion <- colSums((data==0) / nrow(data))
+  # Filter out columns about threshold
+  data_out <- data %>% select(which(na_proportion <= threshold))
+  return(data_out)
+}
+
+# Remove features
+metabolomics_pos <- data.frame(t(metabolomics_pos))
+metabolomics_filtered_pos <- filter_na_columns(metabolomics_pos)
+dim(metabolomics_filtered_pos)
+
+
+# Remove these features from feature metadata table
+metabolomics_features_pos <- metabolomics_features_pos[colnames(metabolomics_filtered_pos),]
+```
+# Filter for metabolomics panel
+
+### Read Metabolomics panel
+```{r}
+mtblmcs_panel <- read.csv('Z:/data/iPSC_data/iPSC_metabolomics_TML/2024-10-17_Metabolic_Package_NGMS_v0.8.csv')
+
+## Adjust column names
+mtblmcs_panel$RTpos <- mtblmcs_panel$RT._NMG
+mtblmcs_panel$RTneg <- mtblmcs_panel$RT._NMG.1
+
+## Filter RT -1 and -2
+mtblmcs_panel <- mtblmcs_panel[mtblmcs_panel$RTpos != -2,]
+mtblmcs_panel <- mtblmcs_panel[mtblmcs_panel$RTpos != -1,]
+
+mtblmcs_panel <- mtblmcs_panel[mtblmcs_panel$RTneg != -2,]
+mtblmcs_panel <- mtblmcs_panel[mtblmcs_panel$RTneg != -1,]
+```
+
+
+## Prepare metabolomics data for matching
+```{r}
+metabolomics_features_pos$RTpos <- as.numeric(metabolomics_features_pos$R)
+metabolomics_features_pos$Mass <- as.numeric(metabolomics_features_pos$Mass)
+
+#adduct shift
+metabolomics_features_pos$Adduct_num <- sapply(strsplit(as.character(metabolomics_features_pos$adduct), "\\+ "), function(x) {
+  if (length(x) < 2) return(0) else return(as.numeric(x[2]))
+})
+metabolomics_features_pos$Adduct_num <- as.numeric(metabolomics_features_pos$Adduct_num)
+
+#metabolomics_features_pos$Mass <- metabolomics_features_pos$Mass + metabolomics_features_pos$Adduct_num
+```
+
+
+## Match RT and MZ
+```{r}
+# Function to calculate ppm tolerance
+ppm_tolerance <- function(mz1, mz2) {
+  if (is.na(mz1) || is.na(mz2)) return(NA)  # Handle NA values
+  abs(mz1 - mz2) / mz2 * 1e6  # Return difference in ppm
+}
+
+# Function to match metabolomics data
+match_metabolites <- function(data, reference, ppm_tol = 5.5, rt_tol = 0.10, mz_col = "Mass", rt_column = "RT") {
+  matched_results <- data.frame(m_z = numeric(0), RT = numeric(0), match_m_z = numeric(0), match_RT = numeric(0), ppm_diff = numeric(0), rt_diff = numeric(0))
+  
+  for (i in 1:nrow(data)) {
+    mz1 <- data[[mz_col]][i]
+    rt1 <- data[[rt_column]][i]  
+    
+    for (j in 1:nrow(reference)) {
+      mz2 <- reference[[mz_col]][j]
+      rt2 <- reference[[rt_column]][j]
+      
+      # Calculate ppm difference and RT difference
+      ppm_diff <- ppm_tolerance(mz1, mz2)
+      rt_diff <- abs(rt1 - rt2)
+      
+      # Skip if ppm_diff or rt_diff is NA
+      if (is.na(ppm_diff) || is.na(rt_diff)) next
+      
+      # Check if both m/z and RT fall within the specified tolerances
+      if (ppm_diff <= ppm_tol && rt_diff <= rt_tol) {
+      #if (rt_diff <= rt_tol) {
+      #if (ppm_diff <= ppm_tol) {
+        matched_results <- rbind(matched_results, data.frame(m_z = mz1, RT = rt1, match_m_z = mz2, match_RT = rt2, ppm_diff = ppm_diff, rt_diff = rt_diff))
+      }
+    }
+  }
+  
+  return(matched_results)
+}
+
+match_pos <- match_metabolites(metabolomics_features_pos, mtblmcs_panel, mz_col = "Mass", rt_col = "RTpos")
+```
+
+
+
+
+# Negative ionization mode
+
+### Filter features with too much missing values
+```{r}
+library(dplyr)
+filter_na_columns <- function(data, threshold = 0.2) {
+  
+  # calculate NA values per column
+  na_proportion <- colSums((data==0) / nrow(data))
+  # Filter out columns about threshold
+  data_out <- data %>% select(which(na_proportion <= threshold))
+  return(data_out)
+}
+
+# Remove features
+metabolomics_neg <- data.frame(t(metabolomics_neg))
+metabolomics_filtered_neg <- filter_na_columns(metabolomics_neg)
+dim(metabolomics_filtered_neg)
+```
+
+#### Feature metadata (negative)
+```{r }
+metabolomics_features_neg <- read.delim(params$metabomics_feature_neg_metadata, row.names = 1)
+columns_keep <- c("mzmed", "mzmin", "mzmax", "rtmed", 
+                  "rtmin", "rtmax", "npeaks", "X1", "ms_level",
+                  "isotopes", "adduct", "pcgroup")
+metabolomics_features_neg <- metabolomics_features_neg[ , names(metabolomics_features_neg) %in% columns_keep]
+
+## Add mass and retention time from UDA file
+metabolomics_features_neg <- cbind(metabolomics_features_neg_ids, metabolomics_features_neg)
+
+## Add feature IDs (temporarily)
+rownames(metabolomics_features_neg) <- colnames(metabolomics_neg)
+head(metabolomics_features_neg)
+print(dim(metabolomics_features_neg))
+
+# Remove filtered features from feature metadata tablw
+metabolomics_features_neg <- metabolomics_features_neg[colnames(metabolomics_filtered_neg),]
+```
+
+
+### Match with metabolomics panel, prepare feature table
+```{r}
+metabolomics_features_neg$RTneg <- as.numeric(metabolomics_features_neg$R)
+metabolomics_features_neg$Mass <- as.numeric(metabolomics_features_neg$Mass)
+
+#adduct shift
+metabolomics_features_neg$Adduct_num <- sapply(strsplit(as.character(metabolomics_features_neg$adduct), "\\- "), function(x) {
+  if (length(x) < 2) return(0) else return(as.numeric(x[2]))
+})
+metabolomics_features_neg$Adduct_num <- as.numeric(metabolomics_features_neg$Adduct_num)
+
+metabolomics_features_neg$Mass <- metabolomics_features_neg$Mass - metabolomics_features_neg$Adduct_num
+```
+
+
+```{r}
+match_neg <- match_metabolites(metabolomics_features_neg, mtblmcs_panel, mz_col = "Mass", rt_col = "RTneg")
+```
+
+
+
+```{r}
+sessionInfo()   
+```
+

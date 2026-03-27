@@ -1,0 +1,156 @@
+---
+title: "MOFA_Lipids_Class_enrichment"
+output: html_document
+date: "2025-11-17"
+---
+
+
+## Libraries
+```{r}
+library(openxlsx)
+library(fgsea)
+library(dplyr)
+```
+
+
+## Load files when working outside of DRE
+
+```{r}
+input_dir <- 'C:/Users/Z896216/Documents/MOFA_output/'
+
+MOFA_Lipid_T_weights <- read.xlsx(file.path(input_dir, 'factorweights_Lipidomics__Targeted___imputed___log.xlsx'), rowNames=F)
+#MOFA_Lipid_T_weights <- read.csv(file.path(input_dir, 'factorweights_Lipidomics__Targeted___imputed___log_Class.csv'), row.names=1)
+```
+
+Lipidomics features can be grouped in lipid classes. And the features within a class (species) have different chain lengths and number of double bonds.
+```{r}
+lipidomics_feature_metadata <- read.csv(file.path(input_dir, 'lipidomics_T_feature_metadata.csv'), row.names=1)
+table(lipidomics_feature_metadata$Class)
+```
+Each Lipid Class has different nomenclature for structural properties
+```{r}
+lipidomics_feature_metadata[!duplicated(lipidomics_feature_metadata$Class), c("Feature", "Class")]
+```
+
+```{r}
+lipid_sets <- split(lipidomics_feature_metadata$Feature, lipidomics_feature_metadata$Class)
+lipid_sets[1:3]
+```
+Lipid Class ORA using fgsea
+```{r}
+MOFA_Lipid_T_weights_sorted <- MOFA_Lipid_T_weights[order(MOFA_Lipid_T_weights$Factor1, decreasing = T),]
+ranked_lipids <- MOFA_Lipid_T_weights_sorted$Factor1
+names(ranked_lipids) <- MOFA_Lipid_T_weights_sorted$Feature
+
+gsea_results <- fgsea(
+  pathways = lipid_sets,
+  stats = ranked_lipids,
+  minSize = 3,      # minimum lipids per class
+  maxSize = 500,    # maximum lipids per class
+  nproc = 1
+)
+
+gsea_results_strict <- gsea_results %>%
+  filter(
+    padj < 0.01,           # Stricter FDR
+    abs(NES) > 1.8,        # Larger effect size
+    sapply(leadingEdge, length) >= 5  # Meaningful leading edge
+  ) %>%
+  arrange(padj)
+```
+
+Factor 2
+```{r}
+MOFA_Lipid_T_weights_sorted <- MOFA_Lipid_T_weights[order(MOFA_Lipid_T_weights$Factor2, decreasing = T),]
+ranked_lipids <- MOFA_Lipid_T_weights_sorted$Factor2
+names(ranked_lipids) <- MOFA_Lipid_T_weights_sorted$Feature
+
+gsea_results_F2 <- fgsea(
+  pathways = lipid_sets,
+  stats = ranked_lipids,
+  minSize = 3,      # minimum lipids per class
+  maxSize = 500,    # maximum lipids per class
+  nproc = 1
+)
+
+gsea_results_F2_strict <- gsea_results_F2 %>%
+  filter(
+    padj < 0.01,           # Stricter FDR
+    abs(NES) > 1.8,        # Larger effect size
+    sapply(leadingEdge, length) >= 5  # Meaningful leading edge
+  ) %>%
+  arrange(padj)
+```
+
+Factor 3
+```{r}
+MOFA_Lipid_T_weights_sorted <- MOFA_Lipid_T_weights[order(MOFA_Lipid_T_weights$Factor3, decreasing = T),]
+ranked_lipids <- MOFA_Lipid_T_weights_sorted$Factor3
+names(ranked_lipids) <- MOFA_Lipid_T_weights_sorted$Feature
+
+gsea_results_F3 <- fgsea(
+  pathways = lipid_sets,
+  stats = ranked_lipids,
+  minSize = 3,      # minimum lipids per class
+  maxSize = 500,    # maximum lipids per class
+  nproc = 1
+)
+
+gsea_results_F3_strict <- gsea_results_F3 %>%
+  filter(
+    padj < 0.01,           # Stricter FDR
+    abs(NES) > 1.8,        # Larger effect size
+    sapply(leadingEdge, length) >= 5  # Meaningful leading edge
+  ) %>%
+  arrange(padj)
+```
+
+Factor 4
+```{r}
+MOFA_Lipid_T_weights_sorted <- MOFA_Lipid_T_weights[order(MOFA_Lipid_T_weights$Factor4, decreasing = T),]
+ranked_lipids <- MOFA_Lipid_T_weights_sorted$Factor4
+names(ranked_lipids) <- MOFA_Lipid_T_weights_sorted$Feature
+
+gsea_results_F4 <- fgsea(
+  pathways = lipid_sets,
+  stats = ranked_lipids,
+  minSize = 3,      # minimum lipids per class
+  maxSize = 500,    # maximum lipids per class
+  nproc = 1
+)
+
+gsea_results_F4_strict <- gsea_results_F4 %>%
+  filter(
+    padj < 0.01,           # Stricter FDR
+    abs(NES) > 1.8,        # Larger effect size
+    sapply(leadingEdge, length) >= 5  # Meaningful leading edge
+  ) %>%
+  arrange(padj)
+```
+
+
+Save to Excel
+```{r}
+library(openxlsx)
+
+# create workbook
+wb <- createWorkbook()
+
+# add each sheet
+addWorksheet(wb, "Factor1")
+writeData(wb, "Factor1", gsea_results_strict)
+
+addWorksheet(wb, "Factor2")
+writeData(wb, "Factor2", gsea_results_F2_strict)
+
+addWorksheet(wb, "Factor3")
+writeData(wb, "Factor3", gsea_results_F3_strict)
+
+addWorksheet(wb, "Factor4")
+writeData(wb, "Factor4", gsea_results_F4_strict)
+
+# save Excel file
+saveWorkbook(wb, "MOFA_LipidClassEnrichments.xlsx", overwrite = TRUE)
+```
+
+

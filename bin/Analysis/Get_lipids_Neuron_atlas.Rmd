@@ -1,0 +1,179 @@
+---
+title: "LipidEnrichment"
+output: html_document
+date: '2025-09-12'
+---
+
+## R Markdown
+
+```{r}
+dir_NeuroAtlas_downloads <- 'C:/Users/Z896216/Documents/'
+
+
+lipid_vanderKant <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'neurons_van_der_Kant.xlsx'), rowNames = TRUE)
+
+lipid_Isaacs_C9_ASO <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'C9-knockdown_Isaacs_total_norm_data.xlsx'), rowNames = TRUE)
+
+lipid_Isaacs_FAT <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'FAT-1_2_3_Isaacs_total_norm_data.xlsx'), rowNames = TRUE)
+
+lipid_Isaacs_LV_G4C2 <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Control_C9 repeat_Isaacs_total_norm_data.xlsx'), rowNames = TRUE)
+
+lipid_Feringa_AD <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Feringa_AD_total_norm_data.xlsx'), rowNames = TRUE)
+
+lipid_Feringa_Brain <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Feringa_Brain_total_norm_data.xlsx'), rowNames = TRUE)
+                                  
+lipid_Feringa_iPSC_Neuron <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Feringa_total_norm_data.xlsx'), rowNames = TRUE)
+                                                                    
+lipid_Isaacs_C9rep <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Isaacs_C9rep_total_norm_data.xlsx'), rowNames = TRUE)
+                                                                                                      
+lipid_Isaacs_FTLD <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Isaacs_FTLD_total_norm_data.xlsx'), rowNames = TRUE)
+                                                                                                                                        
+lipid_Ward_TMEM106B <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Ward_total_norm_data.xlsx'), rowNames = TRUE)
+```
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+calc_log2fc <- function(df, group_col, ref_group) {
+  # Convert all non-group columns to numeric
+  df <- df %>%
+    mutate(across(-all_of(group_col), ~ as.numeric(.x)))
+  
+  # Remove numeric columns (lipids) with >20% missing values
+  df <- df %>%
+    select(all_of(group_col), where(is.numeric)) %>%
+    select(where(~ mean(is.na(.x)) <= 0.2 | !is.numeric(.x)))
+  
+  # Create a new column collapsing all non-control groups into "comparison"
+  df <- df %>%
+    mutate(group_tmp = if_else(.data[[group_col]] == ref_group, 
+                               ref_group, "comparison"))
+  
+  # Compute mean intensities per (collapsed) group
+  df %>%
+    group_by(group_tmp) %>%
+    summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+    pivot_longer(-group_tmp, names_to = "lipid", values_to = "mean_intensity") %>%
+    pivot_wider(names_from = group_tmp, values_from = mean_intensity) %>%
+    mutate(
+      log2FC = log2(comparison / !!sym(ref_group)),
+      abs_log2FC = abs(log2FC)   # useful for ranking
+    ) %>%
+    arrange(desc(abs_log2FC))    # rank lipids
+}
+
+```
+
+
+```{r}
+LF_vanderKant <- calc_log2fc(lipid_vanderKant, 
+                             group_col = "Genotype", 
+                             ref_group = "SNCA_WT")
+```
+
+
+```{r}
+LF_lipid_Isaacs_C9_ASO <- calc_log2fc(lipid_Isaacs_C9_ASO, 
+                                      group_col = "treatmentDiagnosis", 
+                                      ref_group = "Non-targeting ASO")
+```
+
+
+```{r}
+lipid_Isaacs_FAT <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'FAT-1_2_3_Isaacs_total_norm_data.xlsx'), rowNames = TRUE)
+
+LF_lipid_Isaacs_FAT <- calc_log2fc(lipid_Isaacs_FAT, 
+                                      group_col = "treatmentDiagnosis", 
+                                      ref_group = "BFP") 
+```
+
+
+```{r}
+lipid_Isaacs_LV_G4C2 <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Control_C9 repeat_Isaacs_total_norm_data.xlsx'), rowNames = TRUE)
+
+LF_lipid_Isaacs_LV_G4C2 <- calc_log2fc(lipid_Isaacs_LV_G4C2, 
+                                      group_col = "treatmentDiagnosis", 
+                                      ref_group = "LV-(G4C2)2")
+```
+
+
+```{r}
+lipid_Feringa_AD <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Feringa_AD_total_norm_data.xlsx'), rowNames = TRUE)
+
+LF_lipid_Feringa_AD <- calc_log2fc(lipid_Feringa_AD, 
+                                      group_col = "treatmentDiagnosis", 
+                                      ref_group = "Control")
+```
+
+
+```{r}
+lipid_Feringa_Brain <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Feringa_Brain_total_norm_data.xlsx'), rowNames = TRUE)
+
+LF_lipid_Feringa_Brain <- calc_log2fc(lipid_Feringa_Brain, 
+                                      group_col = "parentCellLineBrainregion", 
+                                      ref_group = "Cerebellum") #TODO
+```
+
+
+```{r}
+lipid_Feringa_iPSC_Neuron <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Feringa_total_norm_data.xlsx'), rowNames = TRUE)
+
+LF_lipid_Feringa_iPSC_Neuron <- calc_log2fc(lipid_Feringa_iPSC_Neuron, 
+                                      group_col = "sampleType", 
+                                      ref_group = "Neuron")
+```
+
+
+```{r}
+lipid_Isaacs_C9rep <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Isaacs_C9rep_total_norm_data.xlsx'), rowNames = TRUE)
+
+LF_lipid_Isaacs_C9rep<- calc_log2fc(lipid_Isaacs_C9rep, 
+                                      group_col = "genoType", 
+                                      ref_group = "C9orf72 no repeat expansion")
+```
+
+
+```{r}
+lipid_Isaacs_FTLD <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Isaacs_FTLD_total_norm_data.xlsx'), rowNames = TRUE)
+
+LF_lipid_Isaacs_FTLD <- calc_log2fc(lipid_Isaacs_FTLD, 
+                                      group_col = "treatmentDiagnosis", 
+                                      ref_group = "Control")
+```
+
+
+```{r}
+lipid_Ward_TMEM106B <- openxlsx::read.xlsx(paste0(dir_NeuroAtlas_downloads, 'Ward_total_norm_data.xlsx'), rowNames = TRUE)
+
+LF_lipid_Ward_TMEM106B <- calc_log2fc(lipid_Ward_TMEM106B, 
+                                      group_col = "genoType", 
+                                      ref_group = "TMEM106B SS185")
+
+```
+
+
+## Write to CSV files
+```{r}
+write.csv(LF_vanderKant, paste0(dir_NeuroAtlas_downloads, 'LF_neurons_van_der_Kant.csv'))
+
+write.csv(LF_lipid_Isaacs_C9_ASO, paste0(dir_NeuroAtlas_downloads, 'LF_C9-knockdown_Isaacs_total_norm_data.csv'))
+
+write.csv(LF_lipid_Isaacs_FAT, paste0(dir_NeuroAtlas_downloads, 'LF_FAT-1_2_3_Isaacs_total_norm_data.csv'))
+
+write.csv(LF_lipid_Isaacs_LV_G4C2, paste0(dir_NeuroAtlas_downloads, 'LF_Control_C9 repeat_Isaacs_total_norm_data.csv'))
+
+write.csv(LF_lipid_Feringa_AD,  paste0(dir_NeuroAtlas_downloads, 'LF_Feringa_AD_total_norm_data.csv'))
+
+write.csv(LF_lipid_Feringa_Brain, paste0(dir_NeuroAtlas_downloads, 'LF_Feringa_Brain_total_norm_data.csv'))
+                                  
+write.csv(LF_lipid_Feringa_iPSC_Neuron, paste0(dir_NeuroAtlas_downloads, 'LF_Feringa_total_norm_data.csv'))
+                                                                    
+write.csv(LF_lipid_Isaacs_C9rep, paste0(dir_NeuroAtlas_downloads, 'LF_Isaacs_C9rep_total_norm_data.csv'))
+                                                                                                      
+write.csv(LF_lipid_Isaacs_FTLD,  paste0(dir_NeuroAtlas_downloads, 'LF_Isaacs_FTLD_total_norm_data.csv'))
+                                                                                                                                        
+write.csv(LF_lipid_Ward_TMEM106B, paste0(dir_NeuroAtlas_downloads, 'LF_Ward_total_norm_data.csv'))
+```
+

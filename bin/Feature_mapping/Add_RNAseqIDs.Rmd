@@ -1,0 +1,78 @@
+---
+title: "Annotate_CpGs"
+output: html_document
+date: '2025-01-30'
+params:
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  config_file: 'config.yml'
+---
+
+## Corrected or Uncorrected data
+```{r}
+input_dir <- 'Z:/data/iPSC_data/Results/MixedModels'
+#input_dir <- 'Z:/data/iPSC_data/Results/MixedModels_CORRECTED/'
+```
+
+## Libraries
+```{r}
+library(ggplot2)
+library(dplyr)
+suppressMessages(library(MultiAssayExperiment))
+suppressMessages(library(HDF5Array))
+```
+
+
+## Read input data 
+
+Input data is a MultiAssayExperiment (MAE) object. 
+```{r}
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+mae
+```
+
+
+## Assay name (RNAseq)
+```{r}
+assay_name <- 'RNAseq'
+```
+
+## Read mixed models results
+```{r}
+split_string <- "_MixedModel"
+
+xlsx_files <- list.files(input_dir, pattern = "\\.xlsx$", full.names=T)
+
+data_list <- list()
+
+for (file in xlsx_files) {
+  data_list[[file]] <- openxlsx::read.xlsx(file, sheet = assay_name)
+}
+```
+
+```{r}
+mapping_table <- as.data.frame(rowData(mae[["RNAseq | RTC"]]))
+```
+
+## Add feature metadata to Mixed Model results
+```{r}
+updated_list <- lapply(data_list, function(df) {
+  df <- df %>%
+    left_join(mapping_table %>% select(all_of(c("feature", 
+                                                "Gene_symbol"))),
+              by = "feature")
+  return(df)
+})
+```
+
+# Save results to same Excel file
+```{r}
+library(openxlsx)
+lapply(names(updated_list), function(name_df) {
+  df <- updated_list[[name_df]]
+  wb <- loadWorkbook(name_df)
+  writeData(wb, sheet = assay_name, x = df, withFilter = F)
+  saveWorkbook(wb, name_df, overwrite = T)
+})
+```

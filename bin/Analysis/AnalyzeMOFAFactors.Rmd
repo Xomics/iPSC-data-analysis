@@ -1,0 +1,481 @@
+---
+title: "Analyze_MOFA_factors"
+output: html_document
+date: "2025-10-14"
+params:
+  outdir: Z:/data/iPSC_data/results/MOFA
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  mofa_scores: Z:/data/iPSC_data/Results/MOFA/All_Samples/SampleScores.csv
+  factor_weights_dir: Z:/data/iPSC_data/Results/MOFA/All_Samples/
+  markers_dir: Z:/data/iPSC_data/Markers_files
+  config_file: 'config.yml'
+---
+
+## Params
+```{r}
+print(params)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!dir.exists(outdir)){
+    outdir <- getwd()
+}
+```
+
+
+## Libraries
+```{r}
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(MOFA2)
+library(ggplot2)
+library(ggpubr)
+library(ggrepel)
+```
+
+
+## Read Multi-Omics data
+```{r read_input_data, message=FALSE}
+library(MultiAssayExperiment)
+library(HDF5Array)
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+```
+
+
+## Read Sample Scores
+```{r}
+wide_df <- read.csv(params$mofa_scores)
+
+## Phenotype (colData MAE)
+#pheno_df <- as.data.frame(colData(mae))
+
+## Add phenotype data
+#wide_df <- cbind(wide_df, pheno_df)
+
+scores_df <- reshape2::melt(wide_df)
+```
+
+
+## Plot bio rep number on MOFA scores
+```{r}
+scores_df <- scores_df %>%
+  mutate(BioRep =  sub(".*_", "", sample))
+
+scores_df$BioRep <- as.factor(scores_df$BioRep)
+```
+
+```{r}
+mofa_factor <- 'Factor1'
+
+df_factor <- scores_df[scores_df$variable == mofa_factor,]
+ggp <- ggplot(df_factor, aes(x= BioRep, y=value, fill = BioRep)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+ggsave(file.path(outdir, 'Factor1_scores_BioRep.pdf'), ggp, width=4.5, height=3)
+```
+
+
+```{r, fig.width=10}
+df_factor <- scores_df[scores_df$variable == mofa_factor,]
+ggp <- ggplot(df_factor, aes(x= observation.unit.identifier.crispr, y=value, fill = observation.unit.identifier.crispr)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot'))
+ggsave(file.path(outdir, 'Factor1_scores_ObsUnit.pdf'), ggp, width=8, height=5)
+```
+
+
+```{r}
+ggp <- ggplot(df_factor, aes(x= culturing.strategy, y=value, fill = culturing.strategy)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+ggsave(file.path(outdir, 'Factor1_scores_Culturing.pdf'), ggp, width=5, height=4)
+```
+
+
+```{r}
+ggp <- ggplot(df_factor, aes(x= tissues.from.which.cells.were.derived, y=value, fill = tissues.from.which.cells.were.derived)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+ggsave(file.path(outdir, 'Factor1_scores_Tissue.pdf'), ggp, width=6, height=3)
+```
+
+
+```{r}
+ggp <- ggplot(df_factor, aes(x= sampling.timestamp, y=value, fill = sampling.timestamp)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+
+ggsave(file.path(outdir, 'Factor1_scores_SamplingTimestampg.pdf'), ggp, width=7, height=5)
+```
+
+
+```{r}
+ggp <- ggplot(df_factor, aes(x= phenotype, y=value, fill = phenotype)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+
+ggsave(file.path(outdir, 'Factor1_scores_Phenotype.pdf'), ggp, width=6, height=4)
+```
+
+
+```{r}
+ggp <- ggplot(df_factor, aes(x= reprogramming.method, y=value, fill = reprogramming.method)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+
+ggsave(file.path(outdir, 'Factor1_scores_Reprogramming.pdf'), ggp, width=6, height=4)
+```
+
+
+```{r}
+cor(as.numeric(wide_df$Factor1), as.numeric(wide_df$PassageNumber), method = "spearman")
+cor(as.numeric(wide_df$Factor2), as.numeric(wide_df$PassageNumber), method = "spearman")
+cor(as.numeric(wide_df$Factor3), as.numeric(wide_df$PassageNumber), method = "spearman")
+cor(as.numeric(wide_df$Factor4), as.numeric(wide_df$PassageNumber), method = "spearman")
+cor(as.numeric(wide_df$Factor5), as.numeric(wide_df$PassageNumber), method = "spearman")
+cor(as.numeric(wide_df$Factor6), as.numeric(wide_df$PassageNumber), method = "spearman")
+```
+
+## Feature weights
+```{r}
+markers_df <- read.csv(file.path(params$markers_dir, 'Transporters.csv'))
+
+factor_weights_proteomics <- read.csv(file.path(params$factor_weights_dir, "factorweights_Proteomics.csv"), row.names=1)
+factor_weights_proteomics$UniProt <- factor_weights_proteomics$feature
+
+## Add rank columns
+factor_weights <- factor_weights_proteomics[order(factor_weights_proteomics$Factor1, decreasing = T),]
+factor_weights$Rank <- seq(1, nrow(factor_weights))
+
+df_mapped <- factor_weights %>%
+  left_join(markers_df, by = "UniProt")
+
+ggp <- ggplot(df_mapped, aes(x=Rank, y=Factor1)) +
+  geom_point() +
+  geom_text_repel(aes(label = Gene_symbol), 
+                  na.rm = TRUE, 
+                  size = 5,
+                  box.padding = 1.0,
+                  point.padding =0.5,
+                  force = 8,
+                  nudge_x = 0.2,
+                  nudge_y = 0.2,
+                  segment.color = "blue",
+                  segment.size = 0.5,
+                  max.overlaps = Inf
+                  ) +
+  ggtitle('Proteomics loadings on factor 1') +
+  theme_bw()
+
+ggp
+
+ggsave(file.path(outdir,  'Prot_Weights_Factor1.pdf'), ggp, height=3.4, width = 5.5)
+```
+
+
+Metaboomics LUMC, glutamine and doxycycline
+```{r}
+markers_df <- read.csv(file.path(params$markers_dir, 'MetabolomicsLUMC_ManAnnotations.csv'))
+
+factor_weights <- read.csv(file.path(params$factor_weights_dir, "factorweights_Metabolomics__LUMC___total_area_normalized.csv"), row.names=1)
+## Add rank columns
+factor_weights <- factor_weights[order(factor_weights$Factor1, decreasing = T),]
+factor_weights$Rank <- seq(1, nrow(factor_weights))
+factor_weights$Feature_ID <- rownames(factor_weights)
+
+df_mapped <- factor_weights %>%
+  left_join(markers_df, by = "Feature_ID")
+
+ggp <- ggplot(df_mapped, aes(x=Rank, y=Factor1)) +
+  geom_point() +
+  geom_text_repel(aes(label = Label ), 
+                  na.rm = TRUE, 
+                  size = 5,
+                  box.padding = 1.0,
+                  point.padding =0.5,
+                  force = 8,
+                  nudge_x = 0.5,
+                  nudge_y = 0.1,
+                  segment.color = "blue",
+                  segment.size = 0.5,
+                  max.overlaps = Inf
+                  ) +
+  ggtitle('Medium components on factor 1') +
+  theme_bw()
+
+ggp
+
+ggsave(file.path(outdir,  'Mtblmcs_Weights_Factor1.pdf'), ggp, height=3.4, width = 5.5)
+```
+
+
+## Same plots for Factor 2
+
+
+* Ranks of neuronal markers genes
+
+RNAseq
+```{r}
+markers_df <- read.csv(file.path(params$markers_dir, 'Neuron_markers.csv'))
+markers_df <- markers_df[markers_df$Stage != 'Ipsc',]
+
+factor_weights <- read.csv(file.path(params$factor_weights_dir, "factorweights_RNAseq___RTC.csv"), row.names=1)
+factor_weights$Ensembl <- factor_weights$feature
+factor_weights$X <- NULL
+factor_weights$Gene_symbol <- NULL
+
+
+## Add rank columns
+factor_weights <- factor_weights[order(factor_weights$Factor2, decreasing = T),]
+factor_weights$Rank <- seq(1, nrow(factor_weights))
+
+
+df_mapped <- factor_weights %>%
+  left_join(markers_df, by = "Ensembl")
+
+ggp <- ggplot(df_mapped, aes(x=Rank, y=Factor2)) +
+  geom_point() +
+  geom_text_repel(aes(label = Gene_symbol), 
+                  na.rm = TRUE, 
+                  size = 5,
+                  box.padding = 1.0,
+                  point.padding =0.5,
+                  force = 8,
+                  nudge_x = 0.2,
+                  nudge_y = 0.2,
+                  segment.color = "blue",
+                  segment.size = 0.5,
+                  max.overlaps = Inf
+                  ) +
+  ggtitle('MOFA Factor 2 RNAseq feature ranks') +
+  theme_bw()
+
+ggp
+
+ggsave(file.path(outdir,  'RNAseq_Weights_Factor2.pdf'), ggp, height=3.5, width = 5.5)
+```
+
+Proteomics
+```{r}
+neuron_markers_prot <- c(
+'Q9H2A3',  #'NEUROG2' 
+'P11137', #'MAP2'
+'Q13509' #Beta III tubulin'
+)
+
+
+## Add rank columns
+factor_weights_proteomics <- factor_weights_proteomics[order(factor_weights_proteomics$Factor2, decreasing = T),]
+factor_weights_proteomics$Rank <- seq(1, nrow(factor_weights_proteomics))
+
+
+factor_weights_proteomics[neuron_markers_prot, ]
+
+factor_weights_proteomics$label <- ifelse(factor_weights_proteomics$gene_id %in% c(
+    'NEUROG2',
+    'MAP2', 
+    'TUBB3',
+    'NEFL',
+    'NEFM',
+    'SYP',
+    'SYN1'
+), factor_weights_proteomics$gene_id, NA)
+
+ggp <- ggplot(factor_weights_proteomics, aes(x=Rank, y=Factor2)) +
+  geom_point() +
+  geom_text_repel(aes(label = label), 
+                  na.rm = TRUE, 
+                  size = 5.5,
+                  box.padding = 1.0,
+                  point.padding =0.5,
+                  force = 8,
+                  nudge_x = 0.2,
+                  nudge_y = 0.2,
+                  segment.color = "blue",
+                  segment.size = 0.5,
+                  max.overlaps = Inf
+                  ) +
+  ggtitle('MOFA Factor 2 Proteomics feature ranks') +
+  theme_bw()
+
+ggp
+ggsave(file.path(outdir,  'Prot_Weights_Factor2.pdf'), ggp, height = 3.4, width = 5.5)
+```
+
+
+
+
+
+```{r}
+mofa_factor <- 'Factor2'
+
+df_factor <- scores_df[scores_df$variable == mofa_factor,]
+ggp <- ggplot(df_factor, aes(x= BioRep, y=value, fill = BioRep)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+ggsave(file.path(outdir, 'Factor2_scores_BioRep.pdf'), ggp, width=4.5, height=3)
+```
+
+
+```{r, fig.width=10}
+df_factor <- scores_df[scores_df$variable == mofa_factor,]
+ggp <- ggplot(df_factor, aes(x= observation.unit.identifier.crispr, y=value, fill = observation.unit.identifier.crispr)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot'))
+ggsave(file.path(outdir, 'Factor2_scores_ObsUnit.pdf'), ggp, width=8, height=5)
+```
+
+
+```{r}
+ggp <- ggplot(df_factor, aes(x= culturing.strategy, y=value, fill = culturing.strategy)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+ggsave(file.path(outdir, 'Factor2_scores_Culturing.pdf'), ggp, width=5, height=4)
+```
+
+
+```{r}
+ggp <- ggplot(df_factor, aes(x= tissues.from.which.cells.were.derived, y=value, fill = tissues.from.which.cells.were.derived)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+ggsave(file.path(outdir, 'Factor2_scores_Tissue.pdf'), ggp, width=6, height=3)
+```
+
+
+```{r}
+ggp <- ggplot(df_factor, aes(x= sampling.timestamp, y=value, fill = sampling.timestamp)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+
+ggsave(file.path(outdir, 'Factor2_scores_SamplingTimestampg.pdf'), ggp, width=7, height=5)
+```
+
+
+```{r}
+ggp <- ggplot(df_factor, aes(x= phenotype, y=value, fill = phenotype)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+
+ggsave(file.path(outdir, 'Factor2_scores_Phenotype.pdf'), ggp, width=6, height=4)
+```
+
+
+```{r}
+ggp <- ggplot(df_factor, aes(x= reprogramming.method, y=value, fill = reprogramming.method)) + 
+  geom_boxplot(outlier.shape = NA, alpha =0.6) +
+  geom_jitter(width =0.15, size =2, alpha =0.8) +
+  stat_compare_means(
+    method = "kruskal.test",
+    label = "p.format"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme_bw() +
+  labs(x = 'Phenotype group', y = "MOFA scores", title = paste0(mofa_factor, ' scores boxplot')) 
+
+ggsave(file.path(outdir, 'Factor2_scores_Reprogramming.pdf'), ggp, width=6, height=4)
+```
+

@@ -1,0 +1,353 @@
+---
+title: 'ANCOVA models'
+author:
+  - Casper de Visser^[Radboud university medical center, Casper.deVisser@radboudumc.nl]
+output:
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  config_file: "config.yml"
+  outdir: Z:/data/iPSC_data/results/RLM/
+---
+
+## Params
+The `MultiAssayExperiment` [@Ramos2017] contains preprocessed data and has been created with the *R* notebook `examples\create_MultiAssayExperiment.Rmd`.
+
+```{r read_multiassayexperiment}
+print(params)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!dir.exists(outdir)){
+    outdir <- getwd()
+}
+```
+
+## Read data and metadata: MultiAssayExperiment
+
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+mae
+```
+
+The MultiAssayExperiment contains individual omics assays
+
+```{r}
+experiment_names <- names(experiments(mae))
+experiment_names
+```
+
+
+
+Technical variables are available per assay
+
+```{r}
+tech_vars_factor <- lapply(experiments(mae), function(x) {
+  num_levels <- apply(colData(x), 2, function(x) {length(levels(as.factor(x)))})
+  t <- names(colData(x))[num_levels <= 9 & num_levels > 1]
+  t <- t[t!="subject.id"]
+  t <- t[!t %in% names(colData(mae))]
+})
+tech_vars_factor
+
+tech_vars_continuous <- lapply(experiments(mae), function(x) {
+  num_levels <- apply(colData(x), 2, function(x) {length(levels(as.factor(x)))})
+  t <- names(colData(x))[num_levels > 9]
+  t <- t[t!="subject.id"]
+  t <- t[t!="measurement.id"]
+  t <- t[t!="measurement_names"]
+  t <- t[t!="ID.Patient"]
+  t <- t[!t %in% c("SampleID", "Radboud.code", "Kevin.nr", "Kevin.CPM", 
+                   "Sample.name", "ISA_name", "SampleID_withrep", "Sample_Overview_names")] #TODO, remove these from sample metadata sheet
+  t <- t[!t %in% c("GroupNum", "GroupName", "SampleNorm", "Radboud.code.1")] 
+
+  t <- t[!t %in% names(colData(mae))]
+})
+tech_vars_continuous
+```
+
+
+Phenotype information shared across all assays can be accessed via `colData()`
+
+```{r sample_information_overview}
+names(colData(mae))
+
+pheno_df <- as.data.frame(colData(mae))
+
+## Add column for Disease vs Healthy comparison
+new_column <- lapply(pheno_df$phenotype, function(x) {
+    if (startsWith(x, 'Diseas')) {
+        value <- 'Disease'
+    }
+    else{
+        value <- 'Healthy'
+    }
+})
+pheno_df$Disease <- as.character(new_column)
+```
+
+
+## Linear models with all healthy vs all disease
+```{r}
+run_lm_se <- function(se, outcomes, covariates = NULL) {
+  # create data frame with omics feature values
+  df <- as.data.frame(t(assays(se)[[1]]))
+  # remove non-variable features
+  df <- df[, apply(df, 2, function(column) {
+    var(column, na.rm = T) != 0 })]
+  # remove extremely sparse features
+  xpercent <- nrow(df)*0.5
+  df <- df[, apply(df, 2, function(column) {
+    sum(column == 0, na.rm = T) < xpercent })]
+  features <- colnames(df)
+  # add biological variables to data frame
+  df <- cbind(df, pheno_df[rownames(df), ]) 
+  # --> TODO: add mae as parameter and use experiment name to select se
+  # add assay-specific technical variables to data frame
+  #df <- cbind(df, colData(se))
+  
+  #' Apply robust linear modeling to one feature and one outcome variable
+  #'
+  #' @param feature A molecule identifier present in rowData(SummarizedExperiment).
+  #' @param df A data frame containing assay data and biological variables.
+  #' @param outcome A character string indicating biological variable column name.
+  #' @param covariates A character string indicating covariate column name.
+  #' @returns A data frame.
+  #' @examples
+  #' run_rlm_df("hmdb:HMDB0000062", df, outcome = "Age", covariates = c("Sex"))
+  run_rlm_df <- function(feature, df, outcome, covariates = NULL) {
+    # run rlm for one feature and one outcome
+    df$y <- df[[feature]]
+    # define formula
+    covar_term <- ""
+    if (!is.null(covariates)) {
+      covar_term <- paste0(" + ", paste0(covariates, collapse = " + "))}
+    str_formula <- paste0("y ~ ", outcome, covar_term)
+    my_formula <- as.formula(str_formula)
+    # fit robust regression model
+    lm_fit <- try(lm(formula = my_formula, data = df))
+    if (length(lm_fit) < 2) {
+      rlm_results = data.frame(
+        feature = feature,
+        outcome = outcome,
+        formula = str_formula,
+        covariates = paste0(covariates, collapse = "+"),
+        coefficient = NA, 
+        std.error = NA,
+        t.value = NA,
+        p.value = NA)
+    } else {
+      # results
+      rlm_results = data.frame(
+        feature = feature,
+        outcome = outcome,
+        formula = str_formula,
+        covariates = paste0(covariates, collapse = "+"),
+        coefficient = summary(lm_fit)$coefficients[2, "Estimate"], 
+        std.error = summary(lm_fit)$coefficients[2, "Std. Error"],
+        t.value = summary(lm_fit)$coefficients[2, "t value"],
+        p.value = summary(lm_fit)$coefficients[2, 4],
+        BIC = BIC(lm_fit),
+        AIC = AIC(lm_fit)
+        #p.value = f_test[2,4]
+        )
+    }
+  }
+  rlm_results <- do.call(rbind, lapply(outcomes, function(outcome) {
+    rlm_result_ <- do.call(rbind, lapply(
+      features,
+      run_rlm_df,
+      df = df, outcome = outcome, covariates = covariates))
+    # adjust p-values
+    rlm_result_$p.adj <- p.adjust(rlm_result_$p.value, method = "BH")
+    rlm_result_$rank <- rank(rlm_result_$p.value)
+    rlm_result_
+  }))
+  rlm_results
+}
+```
+
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+## Assay selection
+```{r}
+assay_names <- config$experiment_names$general_selection
+assay_names <- assay_names[[5]]
+```
+
+
+## Execute Linear model 
+```{r}
+outcomes <- c(
+  #"phenotype",
+  "Disease",
+  "sex")
+```
+
+
+```{r}
+# fit robust linear models using different formulas
+mae_rlm_woCovariate <- lapply( # without any covariates
+   experiments(mae)[assay_names], run_lm_se,
+   outcomes = outcomes)
+
+mae_rlm_all <- list(
+   `w/o covariates` = mae_rlm_woCovariate)
+
+## Convert into data frame
+mae_rlm_all_disease_merged <- do.call(
+  rbind, lapply(names(mae_rlm_all), function(method_name) {
+    rlm_res_method <- do.call(rbind, lapply(assay_names, function(assay_name) {
+      print(paste0(method_name, assay_name))
+      rlm_res_ <- mae_rlm_all[[method_name]][[assay_name]]
+      rlm_res_$assay <- assay_name #strsplit(assay_name, "_")[[1]][[2]]
+
+      # label only significant; limit to top x significant
+      rlm_res_$label <- ifelse((rlm_res_$p.adj<=0.05) & (rlm_res_$rank < 4),
+                               rlm_res_$feature, NA)
+      rlm_res_
+    }))
+  }))
+
+## Write to csv
+time <- gsub(" ", "_", paste0(Sys.time()))
+time <- substr(time, 1, 16)
+time <- gsub(":", "_", time)
+write.csv(mae_rlm_all_disease_merged, file.path(paste0('rlm_all_disease_merged_', time, '.csv')))
+```
+
+
+## Compare disease groups invidually with healthy 
+
+```{r}
+pheno_df$phenotype[pheno_df$phenotype == 'Diseased: CHD2 CRISPR'] <- 'Diseased: CHD2'
+#pheno_df$phenotype <- droplevels(pheno_df$phenotype)
+pheno_df$phenotype <- relevel(as.factor(pheno_df$phenotype), ref = 'Healthy')
+
+run_rlm_se <- function(se, outcomes, covariates = NULL) {
+  
+  # create data frame with omics feature values
+  df <- as.data.frame(t(assays(se)[[1]]))
+  # remove non-variable features
+  df <- df[, apply(df, 2, function(column) {
+    var(column, na.rm = T) != 0 })]
+  # remove extremely sparse features
+  xpercent <- nrow(df)*0.5
+  df <- df[, apply(df, 2, function(column) {
+    sum(column == 0, na.rm = T) < xpercent })]
+  # remove features with missing values
+  df <- df[,colSums(is.na(df))==0]
+  features <- colnames(df)
+  # add biological variables to data frame
+  df <- cbind(df, pheno_df[rownames(df), ])
+
+  # --> TODO: add mae as parameter and use experiment name to select se
+  # add assay-specific technical variables to data frame
+  #df <- cbind(df, colData(se))
+    #' Apply robust linear modeling to one feature and one outcome variable
+  #'
+  #' @param feature A molecule identifier present in rowData(SummarizedExperiment).
+  #' @param df A data frame containing assay data and biological variables.
+  #' @param outcome A character string indicating biological variable column name.
+  #' @param covariates A character string indicating covariate column name.
+  #' @returns A data frame.
+  #' @examples
+  #' run_rlm_df("hmdb:HMDB0000062", df, outcome = "Age", covariates = c("Sex"))
+  run_rlm_df <- function(feature, df, outcome, covariates = NULL) {
+    # run rlm for one feature and one outcome
+    df$y <- df[[feature]]
+    # define formula
+    covar_term <- ""
+    if (!is.null(covariates)) {
+      covar_term <- paste0(" + ", paste0(covariates, collapse = " + "))}
+    str_formula <- paste0("y ~ ", outcome, covar_term)
+    my_formula <- as.formula(str_formula)
+    # fit robust regression model
+    df_CHD2 <- df[df$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+    lm_fit_CHD2 <- try(lm(formula = my_formula, data = df_CHD2))
+    lm_fit_df_CHD2 <- as.data.frame(summary(lm_fit_CHD2)$coefficients)
+    
+    df_DM1 <- df[df$phenotype %in% c('Healthy', 'Diseased: DM1', 'Rescue: repeat excised CRISPR DM1'),]
+    df_DM1$phenotype[df_DM1$phenotype == 'Rescue: repeat excised CRISPR DM1'] <- 'Healthy'
+    lm_fit_DM1 <- try(lm(formula = my_formula, data = df_DM1))
+    lm_fit_df_DM1 <- as.data.frame(summary(lm_fit_DM1)$coefficients)
+    
+    df_NANS <- df[df$phenotype %in% c('Healthy', 'Diseased: NANS-CDG'),]
+    lm_fit_NANS <- try(lm(formula = my_formula, data = df_NANS))
+    lm_fit_df_NANS <- as.data.frame(summary(lm_fit_NANS)$coefficients)
+
+    rlm_result <- rbind(lm_fit_df_CHD2[2,],
+                    lm_fit_df_DM1[2,],
+                    lm_fit_df_NANS[2,])
+    colnames(rlm_result) <- c('coefficient', 'std.error', 't.value', 'p.value')
+    rlm_result$feature = feature
+    rlm_result$outcome = rownames(rlm_result)
+    rlm_result$formula = str_formula
+    
+    return(rlm_result)
+    }
+    rlm_results <- do.call(rbind, lapply(outcomes, function(outcome) {
+    rlm_result_ <- do.call(rbind, lapply(
+      features,
+      run_rlm_df,
+      df = df, outcome = outcome, covariates = covariates))
+    # adjust p-values
+    rlm_result_$p.adj <- p.adjust(rlm_result_$p.value, method = "BH")
+    rlm_result_$rank <- rank(rlm_result_$p.value)
+    rlm_result_
+  }))
+  rlm_results
+}
+
+
+# fit robust linear models using different formulas
+mae_rlm_woCovariate <- lapply( # without any covariates
+  experiments(mae)[assay_names], run_rlm_se,
+    outcomes = c('phenotype'))
+
+mae_rlm_all <- list(
+  `w/o covariates` = mae_rlm_woCovariate
+  )
+
+
+# Make into data frame
+mae_rlm_all_merged_phenotypes <- do.call(
+  rbind, lapply(names(mae_rlm_all), function(method_name) {
+    rlm_res_method <- do.call(rbind, lapply(assay_names, function(assay_name) {
+      print(paste0(method_name, assay_name))
+      rlm_res_ <- mae_rlm_all[[method_name]][[assay_name]]
+      rlm_res_$assay <- assay_name #strsplit(assay_name, "_")[[1]][[2]]
+      
+      # label only significant; limit to top x significant
+      rlm_res_$label <- ifelse((rlm_res_$p.adj<=0.05) & (rlm_res_$rank < 4),
+                               rlm_res_$feature, NA)
+      rlm_res_
+    })) 
+  }))
+
+## Write to csv
+time <- gsub(" ", "_", paste0(Sys.time()))
+time <- substr(time, 1, 16)
+time <- gsub(":", "_", time)
+write.csv(mae_rlm_all_merged_phenotypes, file.path(paste0('rlm_all_phenotypes_merged_', time, '.csv')))
+```
+
+
+## Session information
+```{r}
+sessionInfo()
+```
+
+

@@ -1,0 +1,179 @@
+---
+title: "Metablomics_LUMC_untargeted2Tabular"
+output: html_document
+params:
+  metabolomics_data: Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Metabolomics_results_unfiltered.xlsx
+  lumc_samples: Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Samples_match_ISA.xlsx
+  outdir: Z:/data/iPSC_data/iPSC_MAE
+
+---
+
+## Read processed untargeted metabolomics (LUMC) data and save to tabular formats for the MultiAssayExperiment object
+
+#### Script parameters
+```{r}
+print(Sys.Date())
+print(params)
+```
+
+### Libraries
+```{r}
+library(openxlsx)
+```
+
+### Read data
+```{r}
+# Total area normalized
+metabolomics_TA <- openxlsx::read.xlsx(params$metabolomics_data, rowNames = TRUE, sheet = 'Total area normalized')
+
+# Protein content normalized
+metabolomics_PC <- openxlsx::read.xlsx(params$metabolomics_data, rowNames = TRUE, sheet = 'Protein content normalized')
+```
+
+
+
+### Feature metadata
+```{r}
+feature_metadata <- openxlsx::read.xlsx(params$metabolomics_data, rowNames = TRUE, sheet = 'Feature metadata')
+feature_metadata <- feature_metadata[4:2325,]
+```
+
+### Sample metadata
+```{r}
+sample_metadata <- metabolomics_TA[1:3,2:45]
+sample_metadata <- data.frame(t(sample_metadata))
+head(sample_metadata)
+dim(sample_metadata)
+```
+
+
+### Measurement data
+```{r}
+## Function to extract relevant measurement data
+process_measurement_data <- function(data) {
+  data <- data[4:2325, 2:45]
+  data <- data.frame(t(data))
+  data[] <- lapply(data, as.numeric)
+  return(data)
+}
+
+metabolomics_TA_data <- process_measurement_data(metabolomics_TA)
+metabolomics_PC_data <- process_measurement_data(metabolomics_PC)
+
+dim(metabolomics_TA_data)
+dim(metabolomics_PC_data)
+```
+
+### Visualize missingness in data
+```{r}
+source("support_functions/heatmap_missingness.R")
+metabolomics_TA_data <- metabolomics_TA_data
+metabolomics_TA_data[metabolomics_TA_data==0] <- NA
+heatmap_missing(metabolomics_TA_data, 'Filtered Metabolomics (LUMC)')
+```
+
+
+
+## Add column for sample names as written in ISA file using the LUMC Sample Sheet
+```{r}
+lumc_samples <- read.xlsx(params$lumc_samples)
+
+lumc_sheet_order <- lapply(rownames(metabolomics_TA_data), function(x) {
+  num <- strsplit(x, "_")[[1]][[3]]
+  num
+  
+})
+## IMPORTANT!! THIS IS THE ORDER NEEDED TO MATHC THE SAMPLE NAMES
+lumc_samples_order <- as.numeric(as.character(lumc_sheet_order))
+
+sample_metadata_ordered <- sample_metadata[order(lumc_samples_order),]
+```
+
+
+## Match Sample IDs across sample metadata and LUMC excel sheet
+```{r}
+## Merge with LUMC excel table
+lumc_samples$SampleID <- lumc_samples$Sample.name
+sample_metadata_ordered$SampleID <- lumc_samples$Sample.name 
+sample_metadata_ordered <- merge(sample_metadata_ordered, lumc_samples, by = 'SampleID')
+
+GroupName_withrep <- lapply(seq(1, 44), function(x) {
+    name <- sample_metadata_ordered[x, 10]
+    num <- sample_metadata_ordered[x, 5]
+    name <- paste0(name, '_', num)
+    name
+})
+
+## Add Sample ID with bio replicate number
+sample_metadata_ordered$SampleID_withrep <- as.character(GroupName_withrep)
+```
+
+
+## Add new Sample IDs to measurement data based on the orderd samples metadata table
+```{r}
+rownames(metabolomics_TA_data) <- sample_metadata_ordered$SampleID_withrep
+rownames(metabolomics_PC_data) <- sample_metadata_ordered$SampleID_withrep
+```
+
+## Impute NA values with half of the minimum
+```{r}
+library(dplyr)
+metabolomics_TA_data_imputed <- metabolomics_TA_data %>% mutate_if(is.numeric, ~replace(., is.na(.), min(., na.rm = TRUE)/2))
+
+metabolomics_PC_data_imputed <- metabolomics_PC_data %>% mutate_if(is.numeric, ~replace(., is.na(.), min(., na.rm = TRUE)/2))
+```
+
+
+## Log-transformation
+```{r}
+## Log-transform on data, where minimum is added to all values
+metabolomics_TA_data_log <- log2(metabolomics_TA_data_imputed)
+metabolomics_PC_data_log <- log2(metabolomics_PC_data_imputed)
+```
+
+## Create subset with only annotated metabolites (from TA normalized data)
+```{r}
+feature_metadata_ann <- feature_metadata[!is.na(feature_metadata$DotProduct),]
+metabolomics_TA_data_log_ann <- metabolomics_TA_data_log[, rownames(feature_metadata_ann)]
+```
+
+
+
+## Plot distributions
+```{r}
+source("support_functions/PlotDistributions2.R")
+
+PlotDistributions(metabolomics_TA_data, type = 'hist', main_title = 'Total area norm' )
+PlotDistributions(metabolomics_PC_data, type = 'hist', main_title = 'Protein content norm' )
+PlotDistributions(metabolomics_TA_data_log, type = 'hist', main_title = 'Total area norm Log' )
+PlotDistributions(metabolomics_PC_data_log, type = 'hist', main_title = 'Protein content norm Log' )
+```
+
+
+
+### Boxplots per sample
+```{r}
+source('support_functions/BoxplotSamples.R')
+
+metabolomics_TA_data_log$Sample_ID <- rownames(metabolomics_TA_data_log)
+boxplot_samples(metabolomics_TA_data_log, 'Metabolomics (LUMC)')
+metabolomics_TA_data_log$Sample_ID <- NULL
+```
+
+
+## Save data and metadata to .CSV files
+```{r}
+write.csv(metabolomics_TA_data_log, file =  file.path(params$outdir, 'metabolomics_lumc_data_total.csv'))
+#write.csv(metabolomics_PC_data_log, file =  file.path(params$outdir, 'metabolomics_lumc_data_protein.csv'))
+write.csv(feature_metadata, file =  file.path(params$outdir, 'metabolomics_lumc_feature_metadata.csv'))
+write.csv(sample_metadata_ordered, file =  file.path(params$outdir, 'metabolomics_lumc_sample_metadata.csv'))
+
+## Only Annotated data
+write.csv(metabolomics_TA_data_log_ann, file =  file.path(params$outdir, 'metabolomics_lumc_data_total_Ann.csv'))
+write.csv(feature_metadata_ann, file =  file.path(params$outdir, 'metabolomics_lumc_feature_metadata_Ann.csv'))
+```
+
+
+```{r}
+sessionInfo()   
+```

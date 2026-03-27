@@ -1,0 +1,709 @@
+---
+title: "Linear Mixed models"
+author: "Casper de Visser^[Radboud university medical center, Casper.deVisser@radboudumc.nl]"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  mofa_scores: Z:/data/iPSC_data/Results/MOFA/All_Samples/SampleScores.csv
+  CHD2_results: Z:/data/iPSC_data/Results/MixedModels/CHD2_MixedModel_Results.xlsx
+  CHD2_results_cor: Z:/data/iPSC_data/Results/MixedModels_CORRECTED/CHD2_MixedModel_CORRECTED_Results.xlsx
+  NANS_results: Z:/data/iPSC_data/Results/MixedModels/NANS_MixedModel_Results.xlsx
+  NANS_results_cor: Z:/data/iPSC_data/Results/MixedModels_CORRECTED/NANS_MixedModel_CORRECTED_Results.xlsx
+  outdir: Z:/data/iPSC_data/Results/MixedModels/Comparison
+  config_file: config.yml
+---
+
+
+## Params
+The `MultiAssayExperiment` [@Ramos2017] contains preprocessed data and has been created with the *R* notebook `examples\create_MultiAssayExperiment.Rmd`.
+
+```{r read_multiassayexperiment}
+print(params)
+outdir <- params$outdir
+```
+
+## Read data and metadata: MultiAssayExperiment
+
+```{r}
+suppressMessages(require(SummarizedExperiment))
+suppressMessages(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+#mae
+```
+
+
+The MultiAssayExperiment contains individual omics assays
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+
+## Assay selection
+```{r}
+experiment_names <- config$experiment_names$general_selection
+```
+
+
+Phenotype information shared across all assays can be accessed via `colData()`
+
+```{r sample_information_overview}
+names(colData(mae))
+
+pheno_df <- as.data.frame(colData(mae))
+
+## Add column for Disease vs Healthy comparison
+new_column <- lapply(pheno_df$phenotype, function(x) {
+    if (startsWith(x, 'Diseas')) {
+        value <- 'Disease'
+    }
+    else{
+        value <- 'Healthy'
+    }
+})
+pheno_df$Disease <- as.character(new_column)
+```
+
+
+## Correct omics values with MOFA factor scores
+```{r}
+mofa_scores_df <- read.csv(params$mofa_scores, row.names = 1)
+```
+
+
+## Load functions for Nested Mixed Effect model
+```{r, warning=FALSE, message=FALSE}
+source('Mixed_Model_functions.R')
+```
+
+
+```{r}
+experiment_names
+```
+
+
+```{r}
+source('../support_functions/Feature_plots.R')
+```
+
+## Proteomics
+
+Compare Corrected and non-corrected for single features
+```{r}
+assay <- 'Proteomics'
+confound_factors <- c("Factor1", "Factor2")
+ # 1. Prepare data
+data_prep <- prepare_feature_data(assay, mae)
+df <- data_prep$df
+features <- data_prep$features
+  
+# 2. Add confounding factors
+df <- add_confounding_factors(df, mofa_scores_df, confound_factors)
+
+# 3. Regress out confounding factors
+df_corrected <- regress_out_factors(df, features, confound_factors)
+
+# 4. Prepare final modeling dataframe
+df_corrected <- prepare_modeling_data(df_corrected, df, pheno_df, DM1_ONLY=F)
+df <- prepare_modeling_data(df, df, pheno_df, DM1_ONLY=F)
+```
+
+Check CHD2 proteomics features with highest difference 
+```{r}
+CHD2vsControls_proteomics <- readxl::read_xlsx(params$CHD2_results, sheet = 'Proteomics')
+CHD2vsControls_proteomics_CORRECTED <- readxl::read_xlsx(params$CHD2_results_cor, sheet = 'Proteomics')
+
+CHD2vsControls_proteomics_CORRECTED_sign <- CHD2vsControls_proteomics_CORRECTED[CHD2vsControls_proteomics_CORRECTED$p.adj < 0.05, ]
+CHD2vsControls_proteomics_overlap <- CHD2vsControls_proteomics[CHD2vsControls_proteomics$feature %in% CHD2vsControls_proteomics_CORRECTED_sign$feature,]
+```
+
+
+```{r}
+df1 <- CHD2vsControls_proteomics_overlap
+df2 <- CHD2vsControls_proteomics_CORRECTED_sign
+
+cor_plot(df1$coefficient, 
+         df2$coefficient, 
+         x_lab = 'Normal data', 
+         y_lab =  'Corrected data', 
+         title = 'Correlation of coefficients')
+cor_plot(df1$std.error, 
+         df2$std.error, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Standard Deviations')
+cor_plot(df1$rand_effect, 
+         df2$rand_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Random effects')
+cor_plot(df1$nest_effect, 
+         df2$nest_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Nested effects')
+cor_plot(df1$p.value, 
+         df2$p.value, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of nominal p-values')
+```
+
+Rank features based on highest difference in std.dev
+```{r}
+CHD2vsControls_proteomics_overlap$Delta_stdv <- CHD2vsControls_proteomics_overlap$std.error - CHD2vsControls_proteomics_CORRECTED_sign$std.error
+head(CHD2vsControls_proteomics_overlap[ order(CHD2vsControls_proteomics_overlap$Delta_stdv, decreasing = T), c('feature', 'protein_name', 'Delta_stdv')])
+```
+
+
+```{r}
+# S39AE
+feature <- 'Q15043'
+
+df_CHD2 <- df[df$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+df_corrected_CHD2 <- df_corrected[df_corrected$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+
+boxplot_per_group(df_input = df_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = '	S39AE_HUMAN (with correction)'
+                  )
+boxplot_per_group(df_input = df_corrected_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = '	S39AE_HUMAN (with correction)'
+                  )
+```
+
+```{r}
+# RPL35
+boxplot_per_group(df_input = df_CHD2, feature = 'P42766', 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = '	RPL35 (no correction)')
+boxplot_per_group(df_input = df_corrected_CHD2, 
+                  feature = 'P42766', 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = '	RPL35 (with correction)')
+```
+
+
+```{r, fig.height=6, fig.width=7}
+# MCM4
+feature <- 'P33991'
+
+boxplot_per_group(df_input = df_CHD2, 
+                  feature = feature, 
+                  assay_name = 'Proteomics', 
+                  y_lab = 'Log2scaled Levels', 
+                  title = '	MCM4 (no correction)')
+boxplot_per_group(df_input = df_corrected_CHD2, 
+                  feature = feature, 
+                  assay_name = 'Proteomics', 
+                  y_lab = 'Log2scaled Levels', 
+                  title = '	MCM4 (with correction)')
+```
+
+
+```{r}
+# C1GALT1
+feature <- 'Q9NS00'
+
+boxplot_per_group(df_input = df_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels', 
+                  title = 'C1GALT1 (no correction)')
+boxplot_per_group(df_input = df_corrected_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels', 
+                  title = 'C1GALT1 (with correction)')
+```
+
+
+Check NANS proteomics features with highest difference 
+```{r}
+NANSvsControls_proteomics <- readxl::read_xlsx(params$NANS_results, sheet = 'Proteomics')
+NANSvsControls_proteomics_CORRECTED <- readxl::read_xlsx(params$NANS_results_cor, sheet = 'Proteomics')
+
+NANSvsControls_proteomics_CORRECTED_sign <- NANSvsControls_proteomics_CORRECTED[NANSvsControls_proteomics_CORRECTED$p.adj < 0.05, ]
+NANSvsControls_proteomics_overlap <- NANSvsControls_proteomics[NANSvsControls_proteomics$feature %in% NANSvsControls_proteomics_CORRECTED_sign$feature,]
+```
+
+
+```{r}
+cor_plot(NANSvsControls_proteomics_overlap$coefficient, 
+         NANSvsControls_proteomics_CORRECTED_sign$coefficient, 
+         x_lab = 'Normal data', 
+         y_lab =  'Corrected data', 
+         title = 'Correlation of coefficients')
+cor_plot(NANSvsControls_proteomics_overlap$std.error, 
+         NANSvsControls_proteomics_CORRECTED_sign$std.error, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Standard Deviations')
+cor_plot(NANSvsControls_proteomics_overlap$rand_effect, 
+         NANSvsControls_proteomics_CORRECTED_sign$rand_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Random effects')
+cor_plot(NANSvsControls_proteomics_overlap$nest_effect, 
+         NANSvsControls_proteomics_CORRECTED_sign$nest_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Nested effects')
+cor_plot(NANSvsControls_proteomics_overlap$p.value, 
+         NANSvsControls_proteomics_CORRECTED_sign$p.value, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of nominal p-values')
+```
+
+
+Rank features based on highest difference in std.dev
+```{r}
+NANSvsControls_proteomics_overlap$Delta_stdv <- NANSvsControls_proteomics_overlap$std.error - NANSvsControls_proteomics_CORRECTED_sign$std.error
+head(NANSvsControls_proteomics_overlap[ order(NANSvsControls_proteomics_overlap$Delta_stdv, decreasing = T), c('feature', 'protein_name', 'Delta_stdv')])
+```
+
+Select only NANS data
+```{r}
+df_NANS <- df[df$phenotype %in% c('Healthy', 'Diseased: NANS-CDG'),]
+df_corrected_NANS <- df_corrected[df_corrected$phenotype %in% c('Healthy', 'Diseased: NANS-CDG'),]
+```
+
+
+```{r}
+# OLFL3_HUMAN
+feature <- 'Q9NRN5'
+
+boxplot_per_group(df_input = df_NANS, feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels', 
+                  title = '	OLFL3_HUMAN (no correction)'
+                  )
+boxplot_per_group(df_input = df_corrected_NANS, feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels', 
+                  title = '	OLFL3_HUMAN (with correction)'
+                  )
+```
+
+
+```{r}
+#	NOB1_HUMAN
+feature <- 'Q9ULX3'
+
+boxplot_per_group(df_input = df_NANS, feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels', 
+                  title = '	NOB1_HUMAN (no correction)'
+                  )
+boxplot_per_group(df_input = df_corrected_NANS, feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels', 
+                  title = '	NOB1_HUMAN (with correction)'
+                  )
+```
+## Metabolomics RUMC
+
+Check CHD2 metabolomics features with highest difference 
+```{r}
+assay <- 'Metabolomics, TML'
+
+df1 <- readxl::read_xlsx(params$CHD2_results, sheet = assay)
+df2 <- readxl::read_xlsx(params$CHD2_results_cor, sheet = assay)
+df2 <- df2[df2$feature %in% df1$feature,]
+
+df2 <- df2[df2$p.adj < 0.05, ]
+df1 <- df1[df1$feature %in% df2$feature,]
+```
+
+
+```{r}
+cor_plot(df1$coefficient, 
+         df2$coefficient, 
+         x_lab = 'Normal data', 
+         y_lab =  'Corrected data', 
+         title = 'Correlation of coefficients')
+cor_plot(df1$std.error, 
+         df2$std.error, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Standard Deviations')
+cor_plot(df1$rand_effect, 
+         df2$rand_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Random effects')
+cor_plot(df1$nest_effect, 
+         df2$nest_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Nested effects')
+cor_plot(df1$p.value, 
+         df2$p.value, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of nominal p-values')
+```
+
+Rank features based on highest difference in std.dev
+```{r}
+df1$Delta_stdv <- df1$std.error - df2$std.error
+head(df1[ order(df1$Delta_stdv, decreasing = T), c('feature', 'Delta_stdv')])
+```
+
+Compare Corrected and non-corrected for single features
+```{r}
+confound_factors <- c("Factor1", "Factor2")
+ # 1. Prepare data
+data_prep <- prepare_feature_data(assay, mae)
+df <- data_prep$df
+features <- data_prep$features
+  
+# 2. Add confounding factors
+df <- add_confounding_factors(df, mofa_scores_df, confound_factors)
+
+# 3. Regress out confounding factors
+df_corrected <- regress_out_factors(df, features, confound_factors)
+
+# 4. Prepare final modeling dataframe
+df_corrected <- prepare_modeling_data(df_corrected, df, pheno_df, DM1_ONLY=F)
+df <- prepare_modeling_data(df, df, pheno_df, DM1_ONLY=F)
+```
+
+
+```{r}
+#TML_neg483
+feature <- 'TML_neg483'
+assay <- 'Metabolomics RUMC'
+
+df_CHD2 <- df[df$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+df_corrected_CHD2 <- df_corrected[df_corrected$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+
+boxplot_per_group(df_input = df_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = '	TML_neg483; L-Aspartic acid (no correction)'
+                  )
+boxplot_per_group(df_input = df_corrected_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = 'TML_neg483; L-Aspartic acid (with correction)'
+                  )
+```
+```{r}
+#TML_neg483
+feature <- 'TML_pos4365'
+assay <- 'Metabolomics RUMC'
+
+df_CHD2 <- df[df$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+df_corrected_CHD2 <- df_corrected[df_corrected$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+
+boxplot_per_group(df_input = df_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = '	TML_pos4365 (no correction)'
+                  )
+boxplot_per_group(df_input = df_corrected_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = 'TML_pos4365 (with correction)'
+                  )
+```
+Check NANS metabolomics features with highest difference 
+```{r}
+df1 <- readxl::read_xlsx(params$NANS_results, sheet = 'Metabolomics, TML')
+df2 <- readxl::read_xlsx(params$NANS_results_cor, sheet = 'Metabolomics, TML')
+df2 <- df2[df2$feature %in% df2$feature,]
+
+df2 <- df2[df2$p.adj < 0.05, ]
+df1 <- df1[df1$feature %in% df2$feature,]
+```
+
+
+```{r}
+cor_plot(df1$coefficient, 
+         df2$coefficient, 
+         x_lab = 'Normal data', 
+         y_lab =  'Corrected data', 
+         title = 'Correlation of coefficients')
+cor_plot(df1$std.error, 
+         df2$std.error, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Standard Deviations')
+cor_plot(df1$rand_effect, 
+         df2$rand_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Random effects')
+cor_plot(df1$nest_effect, 
+         df2$nest_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Nested effects')
+cor_plot(df1$p.value, 
+         df2$p.value, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of nominal p-values')
+```
+
+Rank features based on highest difference in std.dev
+```{r}
+df1$Delta_stdv <- df1$std.error - df2$std.error
+head(df1[order(df1$Delta_stdv, decreasing = T), c('feature', 'Delta_stdv')])
+```
+
+```{r}
+#TML_pos4365
+feature <- 'TML_pos4365'
+
+df_NANS <- df[df$phenotype %in% c('Healthy', 'Diseased: NANS-CDG'),]
+df_corrected_NANS <- df_corrected[df_corrected$phenotype %in% c('Healthy', 'Diseased: NANS-CDG'),]
+
+boxplot_per_group(df_input = df_NANS, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = '	TML_pos4365 (no correction)'
+                  )
+boxplot_per_group(df_input = df_corrected_NANS, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = 'TML_pos4365 (with correction)'
+                  )
+```
+## RNAseq
+
+Check CHD2 RNA features with highest difference 
+```{r}
+assay <- 'RNAseq'
+
+df1 <- readxl::read_xlsx(params$CHD2_results, sheet = assay)
+df2 <- readxl::read_xlsx(params$CHD2_results_cor, sheet = assay)
+df2 <- df2[df2$feature %in% df2$feature,]
+
+df2 <- df2[df2$p.adj < 0.05, ]
+df1 <- df1[df1$feature %in% df2$feature,]
+```
+
+
+```{r}
+cor_plot(df1$coefficient, 
+         df2$coefficient, 
+         x_lab = 'Normal data', 
+         y_lab =  'Corrected data', 
+         title = 'Correlation of coefficients')
+cor_plot(df1$std.error, 
+         df2$std.error, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Standard Deviations')
+cor_plot(df1$rand_effect, 
+         df2$rand_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Random effects')
+cor_plot(df1$nest_effect, 
+         df2$nest_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Nested effects')
+cor_plot(df1$p.value, 
+         df2$p.value, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of nominal p-values')
+```
+
+Rank features based on highest difference in std.dev
+```{r}
+df1$Delta_stdv <- df1$std.error - df2$std.error
+head(df1[ order(df1$Delta_stdv, decreasing = T), c('feature', 'Delta_stdv')])
+```
+
+Compare Corrected and non-corrected for single features
+```{r}
+assay_name <- 'RNAseq | RTC'
+confound_factors <- c("Factor1", "Factor2")
+ # 1. Prepare data
+data_prep <- prepare_feature_data(assay_name, mae)
+df <- data_prep$df
+features <- data_prep$features
+  
+# 2. Add confounding factors
+df <- add_confounding_factors(df, mofa_scores_df, confound_factors)
+
+# 3. Regress out confounding factors
+df_corrected <- regress_out_factors(df, features, confound_factors)
+
+# 4. Prepare final modeling dataframe
+df_corrected <- prepare_modeling_data(df_corrected, df, pheno_df, DM1_ONLY=F)
+df <- prepare_modeling_data(df, df, pheno_df, DM1_ONLY=F)
+```
+
+
+```{r}
+feature <- 'ENSG00000111799'
+
+df_CHD2 <- df[df$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+df_corrected_CHD2 <- df_corrected[df_corrected$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+
+boxplot_per_group(df_input = df_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = paste0(feature, ' (no correction)')
+                  )
+boxplot_per_group(df_input = df_corrected_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = paste0(feature, ' (with correction)')
+                  )
+```
+
+
+```{r}
+feature <- 'ENSG00000105971'
+
+df_CHD2 <- df[df$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+df_corrected_CHD2 <- df_corrected[df_corrected$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+
+boxplot_per_group(df_input = df_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = paste0(feature, ' (no correction)')
+                  )
+boxplot_per_group(df_input = df_corrected_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = paste0(feature, ' (with correction)')
+                  )
+```
+
+
+```{r}
+feature <- 'ENSG00000138061'
+
+df_CHD2 <- df[df$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+df_corrected_CHD2 <- df_corrected[df_corrected$phenotype %in% c('Healthy', 'Diseased: CHD2'),]
+
+boxplot_per_group(df_input = df_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = paste0(feature, ' (no correction)')
+                  )
+boxplot_per_group(df_input = df_corrected_CHD2, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = paste0(feature, ' (with correction)')
+                  )
+```
+Check NANS RNA features with highest difference 
+```{r}
+assay <- 'RNAseq'
+
+df1 <- readxl::read_xlsx(params$NANS_results, sheet = assay)
+df2 <- readxl::read_xlsx(params$NANS_results_cor, sheet = assay)
+df2 <- df2[df2$feature %in% df2$feature,]
+
+df2 <- df2[df2$p.adj < 0.05, ]
+df1 <- df1[df1$feature %in% df2$feature,]
+```
+
+
+```{r}
+cor_plot(df1$coefficient, 
+         df2$coefficient, 
+         x_lab = 'Normal data', 
+         y_lab =  'Corrected data', 
+         title = 'Correlation of coefficients')
+cor_plot(df1$std.error, 
+         df2$std.error, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Standard Deviations')
+cor_plot(df1$rand_effect, 
+         df2$rand_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Random effects')
+cor_plot(df1$nest_effect, 
+         df2$nest_effect, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of Nested effects')
+cor_plot(df1$p.value, 
+         df2$p.value, 
+         x_lab = 'Normal data', 
+         y_lab = 'Corrected data', 
+         title = 'Correlation of nominal p-values')
+```
+
+Rank features based on highest difference in std.dev
+```{r}
+df1$Delta_stdv <- df1$std.error - df2$std.error
+head(df1[ order(df1$Delta_stdv, decreasing = T), c('feature', 'Delta_stdv')])
+```
+
+
+
+```{r}
+feature <- 'ENSG00000104341'
+
+df_NANS <- df[df$phenotype %in% c('Healthy', 'Diseased: NANS-CDG'),]
+df_corrected_NANS <- df_corrected[df_corrected$phenotype %in% c('Healthy', 'Diseased: NANS-CDG'),]
+
+boxplot_per_group(df_input = df_NANS, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = paste0(feature, ' (no correction)')
+                  )
+boxplot_per_group(df_input = df_corrected_NANS, 
+                  feature = feature, 
+                  assay_name = assay, 
+                  y_lab = 'Log2scaled Levels',
+                  title = paste0(feature, ' (with correction)')
+                  )
+```
+
+
+
+
+
+
+## Session information
+
+```{r}
+sessionInfo()
+```
+
+

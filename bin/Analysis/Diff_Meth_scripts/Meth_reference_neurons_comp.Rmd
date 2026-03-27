@@ -1,0 +1,198 @@
+---
+title: "Compare cell lines to reference methylation of neurons"
+output: html_document
+params:
+  outdir: Z:/data/iPSC_data/results/DMR
+  methrix_dir: Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_raw/
+  reference_dir: Z:/data/iPSC_data/Markers_files/Kaplan2023_ref_material
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+---
+
+
+## Libraries
+```{r}
+library(methrix)
+library(MultiAssayExperiment)
+library(HDF5Array)
+library(openxlsx)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+```
+
+## Params
+```{r}
+print(params)
+```
+
+
+## Load MAE data
+```{r}
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+
+phenotype_data <- as.data.frame(colData(mae))
+```
+
+
+## Read in Methrix object from shared disk
+```{r}
+meth <- methrix::load_HDF5_methrix(params$methrix_dir)
+```
+
+
+## Select ISA file to get correct sample IDs
+```{r}
+isa_assay_prot <- readxl::read_xlsx('../../../20240822_Xomics_iPSC_Neurons_new_READ-ONLY.xlsx', sheet = 'Assay - proteomics')
+```
+
+
+## Read cell-type specific unmethylated regions
+```{r}
+ref_mat <- openxlsx::read.xlsx(file.path(params$reference_dir, '41586_2022_5580_MOESM4_ESM.xlsx'), sheet = 'Table S4A')
+colnames(ref_mat) <- ref_mat[1,]
+
+ref_mat_neurons <- ref_mat[ref_mat$Type == 'Neuron',]
+ref_mat_oligodend <- ref_mat[ref_mat$Type == 'Oligodend',]
+ref_mat_adipocytes <- ref_mat[ref_mat$Type == 'Adipocytes',]
+ref_mat_lung_bron <- ref_mat[ref_mat$Type == 'Lung-Ep-Bron',]
+```
+
+
+## Add liftover data (hg38)
+## Liftover made with genome.ucsc.edu/cgi-bin/hgLiftOver
+```{r}
+hg38_KaplanCpGs <- read.table(file.path(params$reference_dir, 'hglft_genome_25904c_Neurons_withOld.bed'))
+oligo_hg38_KaplanCpGs <- read.table(file.path(params$reference_dir, 'hglft_genome_2635de_Oligo_withOld.bed'))
+adipocytes_hg38_KaplanCpGs <- read.table(file.path(params$reference_dir, 'hglft_genome_274f35_Adip_wihtOld.bed'))
+lung_hg38_KaplanCpGs <- read.table(file.path(params$reference_dir, 'hglft_genome_26a1fb_Lung_withOld.bed'))
+
+add_liftover_coord <- function(liftover_df) {
+  cpg_parts <- do.call(rbind, strsplit(liftover_df$V1, ":"))
+  liftover_df$chr <- cpg_parts[, 1]
+  liftover_df$pos <- cpg_parts[, 2]
+  
+  pos_parts <- do.call(rbind, strsplit(liftover_df$pos, "-"))
+  liftover_df$start <- as.numeric(pos_parts[, 1])
+  liftover_df$end <- as.numeric(pos_parts[, 2])
+  return(liftover_df)
+}
+
+neurons_coord_hg38 <- add_liftover_coord(hg38_KaplanCpGs)
+oligo_coord_hg38 <- add_liftover_coord(oligo_hg38_KaplanCpGs)
+adipocytes_coord_hg38 <- add_liftover_coord(adipocytes_hg38_KaplanCpGs)
+lung_coord_hg38 <- add_liftover_coord(lung_hg38_KaplanCpGs)
+```
+
+
+## Select cell-specific CpGs
+```{r}
+subset_meth_coord <- function(meth, coord_df) {
+  
+  df <- apply(coord_df, 1, function(row){
+    chr = row['chr']
+    start = row['start']
+    end = row['end']
+    meth_subset <- try(methrix::subset_methrix(m = meth, regions = data.table(chr=chr, start = start, end = end)))
+    meth_subset
+  })
+  return(df)
+}
+
+meth_neurons <- subset_meth_coord(meth, neurons_coord_hg38)
+meth_adipo <- subset_meth_coord(meth, adipocytes_coord_hg38)
+meth_oligo <- subset_meth_coord(meth, oligo_coord_hg38)
+meth_lung <- subset_meth_coord(meth, lung_coord_hg38)
+```
+
+
+## Make dataframe of averages per cell line for the 'neuronal hypomethylation blocks'
+```{r}
+source('../../support_functions/ReadMethrix2Df.R')
+
+make_avr <- function(meths, region_names) {
+  meth_regions <- lapply(meths, function(meth) {
+    df <- read_meth2df(meth, isa_assay_prot)
+    df <- df[[1]]
+    df <- data.frame(t(df))
+    means <- rowMeans(df)
+    means
+  })
+ 
+  df <- as.data.frame(do.call(cbind, meth_regions))
+  colnames(df) <- region_names
+  df <- data.frame(t(df))
+
+  return(df)
+}
+
+neuron_meth_regions <- make_avr(meth_neurons, hg38_KaplanCpGs$V1)
+adipo_meth_regions <- make_avr(meth_adipo, adipocytes_hg38_KaplanCpGs$V1)
+oligo_meth_regions <- make_avr(meth_oligo, oligo_hg38_KaplanCpGs$V1)
+lung_meth_regions <- make_avr(meth_lung, lung_hg38_KaplanCpGs$V1)
+```
+
+
+## Add reference beta-values
+```{r}
+ref_mat_neurons_sub <- ref_mat_neurons[ref_mat_neurons$Gene != 'SPATA31A6', ]
+neuron_meth_regions$Kaplan <- ref_mat_neurons_sub$`Target meth. `
+
+adipo_meth_regions$Kaplan <- ref_mat_adipocytes$`Target meth. `
+oligo_meth_regions$Kaplan <- ref_mat_oligodend$`Target meth. `
+lung_meth_regions$Kaplan <- ref_mat_lung_bron$`Target meth. `
+```
+
+
+## Pairwise correlations
+```{r}
+correlations_with_Kaplan <- function(df) {
+  
+  df[] <- lapply(df, as.numeric)
+
+  correlations <- apply(df, 2, function(col) cor(col, df[,ncol(df) ], use = "complete.obs"))
+
+  cor_df <- data.frame(
+    feature =  colnames(df),
+    correlations= as.numeric(correlations)
+    )
+  nrows <- nrow(cor_df) -1
+  cor_df <- cor_df[1:nrows,]
+  return(cor_df)
+}
+
+cor_neuro <- correlations_with_Kaplan(neuron_meth_regions)
+cor_adip <- correlations_with_Kaplan(adipo_meth_regions)
+cor_oligo <- correlations_with_Kaplan(oligo_meth_regions)
+cor_lung <- correlations_with_Kaplan(lung_meth_regions)
+
+```
+
+
+## visualize
+```{r}
+df_combined <- data.frame(cbind(cor_neuro$correlations,  cor_oligo$correlations, cor_adip$correlations, cor_lung$correlations))
+colnames(df_combined) <- c("Neurons", "Oligodend", "Adipocytes", "Lung-bron")
+df_combined$SampleID <- cor_adip$feature
+
+df_plot <- reshape2::melt(df_combined)
+
+df_label <- df_plot[startsWith(df_plot$SampleID, 'IPS23_00089'), ] # DM patient 2, clone 2
+df_label$SampleLabel <- gsub("IPS23_00089", "DM1_P2", df_label$SampleID)
+
+ggp <- ggplot(df_plot, aes(x=variable, y =value, color = variable)) +
+  geom_boxplot() +
+  geom_jitter(size = 1) +
+  geom_text(data = df_label, aes(label = SampleLabel), size = 3) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Correlations with cell-type specific methylation regions",
+       x = "Cell type", 
+       y = "Pearson correlation")
+
+ggp
+ggsave(file.path(params$outdir, 'AtlasCorrelations.pdf'), ggp, width=5, height = 4)
+```
+
+

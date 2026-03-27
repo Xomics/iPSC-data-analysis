@@ -1,0 +1,535 @@
+---
+title: 'Pairwise correlations'
+author:
+  - Casper de Visser^[Radboud university medical center, Casper.deVisser@radboudumc.nl]
+output:
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  isa_file: C:/Users/Casper.deVisser/Documents/ipsc-data-analysis/20240822_Xomics_iPSC_Neurons_new_READ-ONLY.xlsx
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  config_file: 'config.yml'
+  outdir: 'Z:/data/iPSC_data/Results/Pairwise correlations/'
+  prot_tech_reps: Z:/data/iPSC_data/iPSC_MAE/proteomics_data_tech_reps_complete.csv
+  metab_tech_reps: Z:/data/iPSC_data/iPSC_MAE/metabolomics_tml_data_tech_rep_complete.csv
+---
+
+## Params
+The `MultiAssayExperiment` [@Ramos2017] contains preprocessed data and has been created with the *R* notebook `examples\create_MultiAssayExperiment.Rmd`.
+
+```{r read_multiassayexperiment}
+print(params)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!dir.exists(outdir)){
+    outdir <- getwd()
+}
+```
+
+## Libraries
+```{r}
+library(stats)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(purrr)
+```
+
+## Read data and metadata: MultiAssayExperiment
+
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+mae
+```
+
+The MultiAssayExperiment contains individual omics assays
+
+```{r}
+experiment_names <- names(experiments(mae))
+experiment_names
+```
+## Read Assay files
+```{r}
+read_isa_file <- function(tab_name){
+  file_name <- params$isa_file
+  file <- readxl::read_xlsx(file_name, sheet = tab_name)
+  isa_df <- file[rowSums(is.na(file)) != ncol(file),]
+  isa_df<- isa_df[isa_df$`quality accessment` != 'FALSE', ] ## Sample QC filter
+  isa_df <- isa_df[isa_df$`quality accessment` != 'Failed', ]
+  isa_df
+}
+
+## Get Assay sheet names
+sheet_names <- openxlsx::getSheetNames(params$isa_file)
+assay_names <- sheet_names[startsWith(sheet_names, 'Assay')]
+assay_names <- assay_names[assay_names != 'Assay - genomics']
+## Read all Assay files
+isa_assay_files <- lapply(assay_names, function(x) read_isa_file(x))
+names(isa_assay_files) <- assay_names
+```
+
+## Map MAE assay names to ISA assay names
+```{r}
+experiments <- names(experiments(mae))
+experiments
+
+df_match_isa_mae <- data.frame(assay_names, experiment_names[c(13, 12, 2, 1, 3, 6, 8)]) #TODO, expaned mapping table
+colnames(df_match_isa_mae) <- c('Assay_names', 'MAE_names')
+df_match_isa_mae
+```
+
+
+## Assay selection from config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+assay_names <- config$experiment_names$general_selection
+df_match_isa_mae <- df_match_isa_mae[ df_match_isa_mae$MAE_names %in% assay_names,]
+```
+
+
+## Function to rename sample names of control lines in MAE Assays
+```{r}
+## Function to re-write the Control sample names, to be improved
+rewrite_names <- function(x) {
+  if (startsWith(x, "WTC")) {
+    x <- 'WTC'
+  }
+  else if (startsWith(x, "X409")) {
+    x <- '409B'
+  }
+  else if (startsWith(x, "Sendai")) {
+    x <- 'Sendai'
+  }
+  else {
+    x<- x
+  }
+  x
+}
+```
+
+## Read ISA Sample tab
+```{r}
+isa_assay_Sample <- readxl::read_xlsx(params$isa_file, sheet = 4)
+```
+
+## Iterate over experiment names to create input data frames
+```{r}
+NumExp <- nrow(df_match_isa_mae)
+
+isa_mae_list <- lapply(seq(1,NumExp), function(x) {
+  
+  ## Get names of Assay/Experiment
+  isa_assay_name <- df_match_isa_mae[x, 1]
+  mae_exper_name <- df_match_isa_mae[x, 2]
+  
+  isa_assay <- isa_assay_files[[isa_assay_name]]
+  
+  ## Add phenotype column of Sample tab to Assay tab
+  phenotypes <- lapply(isa_assay$`sample identifier`, function(x) {
+    phenotype <- isa_assay_Sample[isa_assay_Sample$`sample identifier` == x, 20]
+    phenotype[[1]]
+  })
+  isa_assay$phenotype <- as.character(phenotypes)
+  isa_assay
+
+  se <- experiments(mae)[[mae_exper_name]]
+  df_assay <- as.data.frame(t(assays(se)[[1]]))
+  df_assay$sample_id <- rownames(df_assay)
+  
+  ## Add column with sample names as group
+  new_names <- gsub("(^[^_]*_[^_]*)_.*", "\\1", rownames(df_assay))
+  new_names <- lapply(new_names, function(x) rewrite_names(x))
+  new_names <- gsub("_", "-", new_names) 
+  df_assay$group <- new_names
+  
+  ## IMPORTANT, MATCH ORDER OF ISA ASSAY AND MAE ASSAY
+  isa_assay <- isa_assay[match(df_assay$group, isa_assay$`sample identifier`),]
+  
+  list(isa_assay, df_assay)
+})
+names(isa_mae_list ) <- df_match_isa_mae$MAE_names
+```
+
+
+## Load function to calculate R-squared for samples in the same sample group
+```{r}
+source_paths <- c(
+  "../support_functions/PairwiseCorrelationsFunctions.R",     # when running in Rstudio
+  "PairwiseCorrelationsFunctions.R"                           # when running in Nextflow
+)
+
+for (path in source_paths) {
+  if (file.exists(path)) {
+    source(path)
+    break
+  }
+}
+```
+
+
+## Calculate R-squared per assay, per group
+
+```{r, fig.width=14, fig.height=6}
+lapply(names(isa_mae_list), function(x) {
+  
+  isa_assay <- isa_mae_list[[x]][[1]]
+  df_assay <- isa_mae_list[[x]][[2]]
+  
+  df_sample_identifier <- make_dataframe_rsquared_groups(df_assay, isa_assay, 'sample identifier')
+  df_phenotype <- make_dataframe_rsquared_groups(df_assay, isa_assay, 'phenotype')
+  
+  ## IMPORTANT STEP! REMOVE PAIRS THAT WERE ALSO IN THE OTHER LEVEL
+  df_phenotype <- df_phenotype[!df_phenotype$pair %in% df_sample_identifier$pair, ]
+  
+  plt1 <- plot_rsquared_groups_bio(df_sample_identifier, isa_assay, x, "bio replicate cultures from same cell line")
+  plt2 <- plot_rsquared_groups_pheno(df_phenotype, x, "patients in the same disease group")
+  ggarrange(plt1, plt2)
+
+})
+```
+
+
+## Phenotype groups vs. Cell line groups
+```{r}
+lapply(names(isa_mae_list)[2:7], function(x) {
+  ## Get pairwise correlations
+  print(x)
+  df_input <- get_pairwise_cor_df(x)
+  ## Change label names
+  levels(df_input$Level) <- c("Unrelated samples",  "Samples in same disease group", "Biological replicates")
+  # Make boxplot
+  #ylim_min <- floor(min(df_input$r_squared * 100)) / 100 - 0.02
+  
+  ggp <- ggplot(df_input, aes(x=Level, y=r_squared, fill = Level)) +
+      geom_boxplot(alpha = 0.7, position = position_dodge(width = 0.9)) +
+      theme_minimal() +
+      ggtitle(paste0(x)) +
+      #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+      theme(axis.text.x = element_blank()) +
+      ylim(0.7, 1) +
+      stat_compare_means()  +
+      stat_summary(fun.data = function(x){
+              return(data.frame(y=mean(x), label = paste0(length(x))))
+          }, geom = "text") +
+      theme(legend.position = 'none')
+  name <- gsub(" ", "_", x)
+  name <- gsub("_\\|_", "_", name)
+  ggsave(file.path(outdir, paste0(name, '.pdf')), 
+         ggp,
+         width = 3, height = 4)
+
+})
+```
+
+### EM-seq data on larger scale
+```{r}
+omics_name <- "EMseq | 100,000 most variable CpG sites"
+## Get pairwise correlations
+df_input <- get_pairwise_cor_df(omics_name)
+## Change label names
+levels(df_input$Level) <- c("Unrelated samples",  "Samples in same disease group", "Biological replicates")
+# Make boxplot
+ggp <- ggplot(df_input, aes(x=Level, y=r_squared, fill = Level)) +
+    geom_boxplot(alpha = 0.7, position = position_dodge(width = 0.9)) +
+    theme_minimal() +
+    ggtitle(paste0(omics_name)) +
+    theme(axis.text.x = element_blank()) +
+    ylim(0, 1) +
+    stat_compare_means()  +
+    stat_summary(fun.data = function(x){
+              return(data.frame(y=mean(x), label = paste0(length(x))))
+          }, geom = "text") 
+
+name <- gsub(" ", "_", omics_name)
+name <- gsub("_\\|_", "_", name)
+ggsave(file.path(outdir, paste0(name, '.pdf')), 
+         ggp,
+         width = 3, height = 4)
+```
+
+
+## DM1 group only, with clones of patient 2
+```{r}
+clones <- c('IPS20_00035',
+            'IPS23_00088', 
+            'IPS23_00089'
+            ) ## TODO: HARDCODED
+
+lapply(names(isa_mae_list)[2:7], function(omics_name) {
+  title <- strsplit(omics_name, split = '\\|')[[1]]
+  ## Get pairwise correlations
+  df_input <- get_pairwise_cor_df_clones(omics_name, clones, "Diseased: DM1")
+  ## Change label names
+  levels(df_input$Level) <- c("DM1 patients", "P2 clones", "Biological repl.")
+  colors <- c("DM1 patients" = "green4", "P2 clones" = "gold3", "Biological repl." = "skyblue1")
+  ymin <- min(df_input$r_squared)
+  ymax <- max(df_input$r_squared) + 0.02
+  # Make boxplot
+  ggp <- ggplot(df_input, aes(x=Level, y=r_squared, fill = Level)) +
+      geom_boxplot(alpha = 0.7, position = position_dodge(width = 0.9)) +
+      theme_minimal() +
+      ggtitle(paste0(title)) +
+      #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+      theme(axis.text.x = element_blank()) +
+      ylim(ymin, ymax) +
+      scale_fill_manual(values = colors) +
+      theme(legend.position = 'none') +
+      stat_compare_means()  +
+      stat_summary(fun.data = function(x){
+              return(data.frame(y=mean(x), label = paste0(length(x))))
+          }, geom = "text")
+  ggsave(file.path(outdir, paste0('DM1_clones_', title, '.pdf')), plot = ggp, width = 3, height= 4)
+
+})
+```
+
+### EM-seq data on larger scale
+```{r}
+omics_name <- "EMseq | 100,000 most variable CpG sites"
+df_input <- get_pairwise_cor_df_clones(omics_name, clones, "Diseased: DM1")
+## Change label names
+levels(df_input$Level) <- c("DM1 patients", "P2 clones", "Biological rep.")
+colors <- c("DM1 patients" = "green4", "P2 clones" = "gold3", "Biological rep." = "skyblue1")
+# Make boxplot
+ggp <- ggplot(df_input, aes(x=Level, y=r_squared, fill = Level)) +
+    geom_boxplot(alpha = 0.7, position = position_dodge(width = 0.9)) +
+    theme_minimal() +
+    ggtitle(paste0(omics_name, '\nPairwise correlations between phenotype/bio replicate')) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+    scale_fill_manual(values = colors) +
+    ylim(0.25, 0.85) +
+    stat_compare_means()  +
+    stat_summary(fun.data = function(x){
+            return(data.frame(y=mean(x), label = paste0(length(x))))
+        }, geom = "text")
+
+ggsave(file.path(outdir, 'DM1_clones_EMseq.pdf'), plot = ggp, width = 3, height= 4)
+```
+
+
+
+## Only clones of DM1 patient 2
+```{r}
+clones <- c('IPS20_00035',
+            'IPS23_00088',
+            'IPS23_00089'
+            ) ## TODO: HARDCODED
+
+lapply(names(isa_mae_list)[2:7], function(omics_name) {
+  title <- strsplit(omics_name, split = '\\|')[[1]]
+  ## Get pairwise correlations
+  df_input <- get_pairwise_cor_df_clones(omics_name, clones, "Diseased: DM1")
+  ## Select only clones
+  df_input <- df_input[df_input$Level == 'DM1_P2_clones',]
+  df_input$Clones <- NA
+  df_input$Clones[grepl('IPS23_00089', df_input$pair) & grepl("IPS20_00035", df_input$pair)] <- 'C1 vs C2'
+  df_input$Clones[grepl('IPS23_00088', df_input$pair) & grepl("IPS20_00035", df_input$pair)] <- 'C1 vs C3'
+  df_input$Clones[grepl('IPS23_00088', df_input$pair) & grepl("IPS23_00089", df_input$pair)] <- 'C2 vs C3'
+  ymin <- min(df_input$r_squared)
+  ymax <- 1
+  # Make boxplot
+  ggp <- ggplot(df_input, aes(x=Clones, y=r_squared, fill = Clones)) +
+      geom_boxplot(alpha = 0.7, position = position_dodge(width = 0.9)) +
+      theme_minimal() +
+      ggtitle(paste0(title)) +
+      theme(axis.text.x = element_blank()) +
+      ylim(ymin, ymax) +
+      theme(legend.position = 'none') +
+      stat_compare_means()  +
+      stat_summary(fun.data = function(x){
+              return(data.frame(y=mean(x), label = paste0(length(x))))
+          }, geom = "text")
+  ggsave(file.path(outdir, paste0('DM1_clones_only_', title, '.pdf')), plot = ggp, width = 3, height= 4)
+
+})
+```
+
+
+## CHD2 group only, with clones of patient 3
+```{r}
+clones <- c('IPS23_00025','IPS22_00063')
+
+lapply(names(isa_mae_list)[2:7], function(x) {
+  title <- strsplit(x, split = '\\|')[[1]]
+  ## Get pairwise correlations
+  df_input <- get_pairwise_cor_df_clones(x, clones, "Diseased: CHD2")
+  ## Change label names
+  levels(df_input$Level) <- c("CHD2 patients", "P3 clones", "Cell lines")
+  colors <- c("CHD2 patients" = "green4", "P3 clones" = "gold3", "Cell lines" = "skyblue1")
+  # Make boxplot
+  ylim_min <- floor(min(df_input$r_squared * 100)) / 100 - 0.02
+  
+  ggp <-ggplot(df_input, aes(x=Level, y=r_squared, fill = Level)) +
+      geom_boxplot(alpha = 0.7, position = position_dodge(width = 0.9)) +
+      theme_minimal() +
+      ggtitle(paste0(x, '\nPairwise correlations between phenotype/bio replicate')) +
+      scale_fill_manual(values = colors) +
+      #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+      theme(axis.text.x = element_blank()) +
+      theme(legend.position = 'none') +
+      ylim(ylim_min, 1) +
+      stat_compare_means()  +
+      stat_summary(fun.data = function(x){
+              return(data.frame(y=mean(x), label = paste0(length(x))))
+          }, geom = "text")
+  ggsave(file.path(outdir, paste0('CHD2_clones_', title, '.pdf')), plot = ggp, width = 3, height= 4)
+
+})
+```
+
+
+### EM-seq data on larger scale
+```{r}
+omics_name <- "EMseq | 100,000 most variable CpG sites"
+df_input <- get_pairwise_cor_df_clones(omics_name, clones, "Diseased: CHD2")
+## Change label names
+levels(df_input$Level) <- c("CHD2 patients", "P3 clones", "Cell lines")
+# Make boxplot
+ggp <- ggplot(df_input, aes(x=Level, y=r_squared, fill = Level)) +
+    geom_boxplot(alpha = 0.7, position = position_dodge(width = 0.9)) +
+    theme_minimal() +
+    ggtitle(paste0(omics_name, '\nPairwise correlations between phenotype/bio replicate')) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+    ylim(0.0, 1) +
+    #theme(legend.position = 'none') +
+    stat_compare_means()  +
+    stat_summary(fun.data = function(x){
+            return(data.frame(y=mean(x), label = paste0(length(x))))
+        }, geom = "text")
+
+ggsave(file.path(outdir, paste0('CHD2_clones_EMseq.pdf')), plot = ggp, width = 3, height= 4)
+```
+
+
+
+# Add technical replicates
+
+## Read technical replicates proteomics 
+```{r}
+proteomics_tech_reps <- read.csv(params$prot_tech_reps)
+proteomics_tech_reps$group <- proteomics_tech_reps$Sample_ID
+proteomics_tech_reps$Sample_ID <- NULL
+```
+
+
+## Read technical replicates metabolomics
+```{r}
+metabolomics_tech_reps <- read.csv(params$metab_tech_reps, row.names = 1)
+```
+
+
+## Proteomics with technical reps
+```{r, fig.height=5}
+df_technical <- pairwise_cor_tech(proteomics_tech_reps)
+
+outfile <- file.path(outdir, 'Proteomics_tech_reps.pdf')
+ggsave(filename = outfile,
+       final_combined_plot(df_technical, 'Proteomics'),
+       width = 7, height =5)
+```
+
+
+## Metabolomics with technical reps
+```{r, fig.height=5}
+df_technical <- pairwise_cor_tech(metabolomics_tech_reps)
+
+outfile <- file.path(outdir, 'Metabolomics_tech_reps.pdf')
+ggsave(filename = outfile,
+        final_combined_plot(df_technical, "Metabolomics, TML" ),
+        width = 7, height =5)
+```
+
+
+## Scatter plot of good examples
+```{r}
+scatter_plot_cor <- function(df, col='pink', x_axis, y_axis, title =  "Scatter plot") {
+  
+  ggp <- ggscatter(df, 
+          x = colnames(df)[[1]], 
+          y = colnames(df)[[2]],
+          color = col,
+          add = 'reg.line',
+          add.params = list(color = "blue")) +
+    labs(title = title,
+         x = paste0(x_axis, " metabolite levels"), 
+         y = paste0(y_axis, " metabolite levels"), ) +
+    theme(axis.title.x =  element_text(size = 14),
+          axis.title.y =  element_text(size = 14)) +
+    stat_cor(aes(label = ..rr.label..), method = "pearson")
+  
+  return(ggp)
+}
+```
+
+
+```{r}
+## Select metabolomics data as example
+name_assay <- "Metabolomics, TML"   
+isa_assay <- isa_mae_list[[name_assay]][[1]]
+df_assay <- isa_mae_list[[name_assay]][[2]]
+
+## Samples with same phenotype
+df_assay$group <- isa_assay[["phenotype"]]
+scatter_plot_df <- df_assay
+scatter_plot_df <- data.frame(t(scatter_plot_df))
+scatter_plot_df <- scatter_plot_df[,c("IPS20_00124_1", 'IPS20_00036_1')]
+scatter_plot_df[,1] <- as.numeric(scatter_plot_df[,1])
+scatter_plot_df[,2] <- as.numeric(scatter_plot_df[,2])
+scatter_plot_cor(scatter_plot_df, 'brown2', 'NANS sample', 'DM1 sample', 'Samples in same disease group')
+```
+
+
+```{r}
+## Select metabolomics data as example
+name_assay <- "Metabolomics, TML"   
+isa_assay <- isa_mae_list[[name_assay]][[1]]
+df_assay <- isa_mae_list[[name_assay]][[2]]
+
+## Samples with same phenotype
+df_assay$group <- isa_assay[["phenotype"]]
+scatter_plot_df <- df_assay[df_assay$group == 'Diseased: DM1',]
+scatter_plot_df <- data.frame(t(scatter_plot_df))
+scatter_plot_df <- scatter_plot_df[,c("IPS20_00035_1", 'IPS20_00036_1')]
+scatter_plot_df[,1] <- as.numeric(scatter_plot_df[,1])
+scatter_plot_df[,2] <- as.numeric(scatter_plot_df[,2])
+scatter_plot_cor(scatter_plot_df, 'darkgreen', 'DM1 patient 1', 'DM1 patient 2', 'Samples in same disease group')
+```
+
+
+```{r}
+## Bio replicates
+df_assay$group <- isa_assay[["phenotype"]]
+scatter_plot_df <- df_assay[df_assay$group == 'Diseased: DM1',]
+scatter_plot_df <- data.frame(t(scatter_plot_df))
+scatter_plot_df <- scatter_plot_df[,c("IPS20_00035_1", 'IPS20_00035_3')]
+scatter_plot_df[,1] <- as.numeric(scatter_plot_df[,1])
+scatter_plot_df[,2] <- as.numeric(scatter_plot_df[,2])
+scatter_plot_cor(scatter_plot_df, 'dodgerblue', 'DM1 patient 1, bio rep 1', 'DM1 patient 1, bio rep 2', 'Samples from same cell line')
+```
+
+
+```{r}
+## Tech replicates
+scatter_plot_df <- metabolomics_tech_reps[metabolomics_tech_reps$group == 'WTC_2',]
+scatter_plot_df <- data.frame(t(scatter_plot_df))
+scatter_plot_df[,1] <- as.numeric(scatter_plot_df[,1])
+scatter_plot_df[,2] <- as.numeric(scatter_plot_df[,2])
+scatter_plot_cor(scatter_plot_df, 'purple', 'Tech. rep 1', 'Tech. rep 2', 'Technical replicates')
+```
+
+## Session information
+
+```{r}
+sessionInfo()
+```
+
+

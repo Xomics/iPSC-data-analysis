@@ -1,0 +1,619 @@
+---
+title: "Molecular Markers"
+output: html_document
+date: "2024-11-15"
+params:
+  outdir: Z:/data/iPSC_data/results/MolMarkers
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  neuron_markers: Markers_files/Neuron_markers.csv
+  TMEM_mappings: Markers_files/TMEM_mappings.csv
+  config_file: 'config.yml'
+---
+
+# Visualize results of linear modelling
+
+## Parameters
+```{r}
+print(params)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!dir.exists(outdir)){
+    outdir <- getwd()
+}
+```
+
+
+## Read data and metadata: MultiAssayExperiment
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+```
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+## Assay selection
+```{r}
+assay_names <- config$experiment_names$general_selection
+assay_names
+```
+
+
+## Phenotypic data
+```{r}
+pheno_df <- as.data.frame(colData(mae))
+```
+
+
+```{r}
+library(patchwork)
+library(pheatmap)
+library(ggplot2)
+library(ggrepel)
+library(ggokabeito) # Okabe-Ito
+library(ggpubr)
+library(ggcorrplot)
+```
+
+
+## Functions for plotting features per disease group
+```{r}
+source_paths <- c(
+  "../support_functions/Feature_plots.R",      # when running in Rstudio
+  "Feature_plots.R"          # when running in Nextflow
+)
+
+for (path in source_paths) {
+  if (file.exists(path)) {
+    source(path)
+    break
+  }
+}
+```
+
+
+## Neuronal markers
+
+```{r}
+assay_name <- assay_names[grepl('RNAseq', assay_names)]
+
+rna_plot_df <- prepare_boxplot_df(assay_name)
+
+boxplot_per_group(rna_plot_df, 'ENSG00000178403', assay_name, 'NEUROG2', 'Log-scaled intensity', phenotype = 'sample.description', color_group = 'phenotype')
+boxplot_per_group(rna_plot_df, 'ENSG00000078018', assay_name, 'MAP2', 'Log-scaled intensity', phenotype = 'sample.description', color_group = 'phenotype')
+boxplot_per_group(rna_plot_df, 'ENSG00000258947', assay_name, 'Beta III tubulin', 'Log-scaled intensity', phenotype = 'sample.description', color_group = 'phenotype')
+boxplot_per_group(rna_plot_df, 'ENSG00000119042', assay_name, 'SATB2', 'Log-scaled intensity', phenotype = 'sample.description', color_group = 'phenotype')
+boxplot_per_group(rna_plot_df, 'ENSG00000136535', assay_name, 'TBR1', 'Log-scaled intensity', phenotype = 'sample.description', color_group = 'phenotype')
+```
+
+## Protein levels
+```{r}
+assay_name <- assay_names[grepl('Prote', assay_names)]
+
+protein_plot_df <- prepare_boxplot_df(assay_name)
+
+boxplot_per_group(protein_plot_df, 'Q9H2A3', assay_name, 'NEUROG2', 'Log-scaled intensity', phenotype = 'sample.description', color_group = 'phenotype')
+boxplot_per_group(protein_plot_df, 'P11137', assay_name, 'MAP2', 'Log-scaled intensity', phenotype = 'sample.description', color_group = 'phenotype')
+boxplot_per_group(protein_plot_df, 'Q13509', assay_name, 'Beta III tubulin', 'Log-scaled intensity', phenotype = 'sample.description', color_group = 'phenotype')
+
+```
+
+## Mature neuronal markers
+```{r}
+markers_df <- read.csv(params$neuron_markers)
+```
+
+
+## Overview figure of molecular markers
+```{r}
+assay_name <- assay_names[grepl('Prote', assay_names)]
+df_input <- prepare_boxplot_df(assay_name)
+
+df_mature <- get_long_table_markers(df_input, omics_id = 'Uniprot', stage = 'Mature')
+df_early <- get_long_table_markers(df_input, omics_id = 'Uniprot', stage = 'Early')
+
+ggp_mature <- boxplot_groups(df_mature, title='Mature markers')
+ggp_early <- boxplot_groups(df_early, title='Early markers')
+
+ggp_combined <- ggp_early / ggp_mature +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom", 
+        legend.justification = "center",
+        legend.direction = "horizontal",
+        legend.box = 'horizontal')
+    
+#ggp_combined
+
+#ggsave(file.path(outdir, 'Markers_prot.pdf'), plot = ggp_combined, width = 15, height = 10)
+```
+
+
+### Heatmap proteomics markers
+```{r}
+markers_df_prt <- markers_df[!is.na(markers_df$Uniprot),]
+
+df_input_heatmap <- df_input[, unique(markers_df_prt$Uniprot)]
+
+ggp <- make_heatmap(df_input_heatmap, 
+                    pheno_df$sample.description,
+                    unique(markers_df_prt$Gene_symbol),
+                    markers_df_prt)
+
+ggsave(file.path(outdir, 'Heatmap_Neuron_Prot.pdf'), ggp, width = 12, height = 14)
+```
+
+## Combine all neuronal markers, and correlate with NEUROG2
+```{r}
+markers_df_prot_neuron <- markers_df_prt[markers_df_prt$Stage != 'Ipsc',]
+
+df_prot <- df_input[, unique(markers_df_prot_neuron$Uniprot)]
+cor_matrix <- cor(df_prot)
+colnames(cor_matrix) <- unique(markers_df_prot_neuron$Gene_symbol)
+rownames(cor_matrix) <- unique(markers_df_prot_neuron$Gene_symbol)
+corrplot::corrplot(cor_matrix, method = 'color', type = 'upper', tl.col='black', tl.srt=45, order = 'hclust')
+```
+
+
+
+```{r}
+# RNA data
+assay_name <- assay_names[grepl('RNAseq', assay_names)]
+df_input <- prepare_boxplot_df(assay_name)
+
+df_mature <- get_long_table_markers(df_input, omics_id = 'Ensembl', stage = 'Mature')
+df_early <- get_long_table_markers(df_input, omics_id = 'Ensembl', stage = 'Early')
+df_NPC <- get_long_table_markers(df_input, omics_id = 'Ensembl', stage = 'Ipsc')
+
+ggp_mature <- boxplot_groups(df_mature, title='Mature markers')
+ggp_early <- boxplot_groups(df_early, title='Early markers')
+ggp_ipsc <- boxplot_groups(df_NPC, title= 'iPSC markers')
+
+ggp_combined <- ggp_ipsc / ggp_early / ggp_mature +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom", 
+        legend.justification = "center",
+        legend.direction = "horizontal",
+        legend.box = 'horizontal')
+    
+
+#ggp_combined
+#ggsave(file.path(outdir, 'Markers_rna.pdf'), plot = ggp_combined, width = 15, height = 10)
+```
+
+#### Heatmap neuronal markers genes
+```{r}
+markers_df_rna <- markers_df[!is.na(markers_df$Ensembl),]
+
+df_input_heatmap <- df_input[, unique(markers_df_rna$Ensembl)]
+
+ggp <- make_heatmap(df_input_heatmap, 
+                    pheno_df$sample.description,
+                    unique(markers_df_rna$Gene_symbol),
+                    markers_df_rna)
+
+ggsave(file.path(outdir, 'Heatmap_Neuron_RNA.pdf'), ggp, width = 14, height = 14)
+```
+
+## Combine all neuronal markers, and correlate with NEUROG2
+```{r}
+markers_df_rna_neuron <- markers_df_rna[markers_df_rna$Stage != 'Ipsc',]
+
+df_rna <- df_input[, unique(markers_df_rna_neuron$Ensembl)]
+cor_matrix <- cor(df_rna)
+colnames(cor_matrix) <- unique(markers_df_rna_neuron$Gene_symbol)
+rownames(cor_matrix) <- unique(markers_df_rna_neuron$Gene_symbol)
+corrplot::corrplot(cor_matrix, method = 'color', type = 'upper', tl.col='black', tl.srt=45, order = 'hclust')
+```
+
+
+## Correlate NEUROG2 RNA and protein levels
+```{r}
+## Select RNA markers that are also present in proteomics data
+markers_df_rna_neuron_overlap <- markers_df_rna[markers_df_rna$Uniprot %in% markers_df_prot_neuron$Uniprot,]
+df_rna_overlap_prot <- df_rna[, unique(markers_df_rna_neuron_overlap$Ensembl)]
+
+## Use same set of set samples for proteomics and RNAseq
+df_prot_overlap <- df_prot[rownames(df_rna_overlap_prot),]
+
+## Use same gene names 
+colnames(df_rna_overlap_prot) <- markers_df_rna_neuron_overlap$Gene_symbol
+colnames(df_prot_overlap) <- markers_df_prot_neuron$Gene_symbol
+
+
+## Make pairwise correlations per marker across omics data sets
+omics_correlations <- sapply(names(df_rna_overlap_prot), function(col) cor(df_rna_overlap_prot[[col]], df_prot_overlap[[col]], use = 'complete.obs'))
+
+markers_correlations <- data.frame(Neuron_marker = names(omics_correlations), Pearson_cor = omics_correlations)
+markers_correlations[order(markers_correlations$Pearson_cor),]
+```
+
+
+## Disease markers
+
+### NANS-CDG
+```{r}
+assay_name <- assay_names[grepl('TML', assay_names)]
+metabolomics_plot_df <- prepare_boxplot_df(assay_name)
+
+boxplot_per_group(metabolomics_plot_df, 'TML_neg3025', assay_name, 'TML_neg3025_ManNAc-6P', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+boxplot_per_group(metabolomics_plot_df, 'TML_neg3622', assay_name, 'TML_neg3622_ManNAc-6P', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+boxplot_per_group(metabolomics_plot_df, 'TML_neg3009', assay_name, 'TML_neg3009_ManNAc-6P', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+boxplot_per_group(metabolomics_plot_df, 'TML_pos4085', assay_name, 'TML_pos4085_ManNAc-6P', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+boxplot_per_group(metabolomics_plot_df, 'TML_pos4106', assay_name, 'TML_pos4106_ManNAc-6P', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+
+boxplot_per_group(metabolomics_plot_df, 'TML_pos2344', assay_name, 'TML_pos2344_ManNAc', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+
+boxplot_per_group(metabolomics_plot_df, 'TML_pos339', assay_name, 'Creatinine', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+boxplot_per_group(metabolomics_plot_df, 'TML_pos666', assay_name, 'Creatinine', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+
+```
+
+## ManNAc6P
+```{r}
+ggp <- boxplot_per_group(metabolomics_plot_df, 'TML_neg3025', assay_name, 'TML_neg3025_ManNAc-6P', 'Log-scaled intensity', phenotype = 'phenotype', color_group = 'phenotype')
+ggp
+ggsave(file.path(outdir, 'ManNAC6p.pdf'), ggp)
+```
+
+
+### DM1
+#### RNA levels
+```{r}
+assay_name <- assay_names[grepl('RNAseq', assay_names)]
+
+rna_plot_df <- prepare_boxplot_df(assay_name)
+
+boxplot_per_group(rna_plot_df, 'ENSG00000149187', assay_name, 'CELF1', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+boxplot_per_group(rna_plot_df, 'ENSG00000048740', assay_name, 'CELF2', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+boxplot_per_group(rna_plot_df, 'ENSG00000159409', assay_name, 'CELF3', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+boxplot_per_group(rna_plot_df, 'ENSG00000161082', assay_name, 'CELF5', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+```
+
+#### Protein levels
+```{r}
+assay_name <- assay_names[grepl('Prot', assay_names)]
+
+protein_plot_df <- prepare_boxplot_df(assay_name)
+
+boxplot_per_group(protein_plot_df, 'Q92879', assay_name, 'CELF1', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+boxplot_per_group(protein_plot_df, 'O95319', assay_name, 'CELF2', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+boxplot_per_group(protein_plot_df, 'Q5SZQ8', assay_name, 'CELF3', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+
+```
+
+
+### CHD2
+```{r}
+# RNA
+assay_name <- assay_names[grepl('RNAseq', assay_names)]
+rna_plot_df <- prepare_boxplot_df(assay_name)
+boxplot_per_group(rna_plot_df, 'ENSG00000185896', assay_name, 'LAMP1', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+
+# PROTEIN
+assay_name <- assay_names[grepl('Prot', assay_names)]
+protein_plot_df <- prepare_boxplot_df(assay_name)
+boxplot_per_group(protein_plot_df, 'P11279', assay_name, 'LAMP1', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+
+# CHD1 protein levels
+boxplot_per_group(protein_plot_df, 'O14646', assay_name, 'CHD1', 'Log2-scaled intensity', phenotype = 'observation.unit.identifier.crispr')
+```
+
+## TMEM132 
+```{r}
+TMEM_mappings <- read.csv(params$TMEM_mappings) 
+```
+
+```{r}
+# RNA
+assay_name <- assay_names[grepl('RNAseq', assay_names)]
+rna_plot_df <- prepare_boxplot_df(assay_name)
+#rna_plot_df_DM_2 <- rna_plot_df[rna_plot_df$observation.unit.identifier.crispr == 'DM_2',]
+boxplot_per_group(rna_plot_df, 'ENSG00000139364', assay_name, 'TMEM132B', 'Log-scaled intensity', phenotype = 'sample.description', width = 20, height = 12)
+boxplot_per_group(rna_plot_df, 'ENSG00000181234', assay_name, 'TMEM132C', 'Log-scaled intensity', phenotype = 'sample.description', width = 20, height = 12)
+boxplot_per_group(rna_plot_df, 'ENSG00000151952', assay_name, 'TMEM132D', 'Log-scaled intensity', phenotype = 'sample.description', width = 20, height = 12)
+boxplot_per_group(rna_plot_df, 'ENSG00000181291', assay_name, 'TMEM132E', 'Log-scaled intensity', phenotype = 'sample.description', width = 20, height = 12)
+```
+
+## DPP6
+```{r}
+boxplot_per_group(rna_plot_df, 'ENSG00000130226', assay_name, 'DPP6', 'Log-scaled intensity', phenotype = 'sample.description')
+```
+
+## RIMBP2
+```{r}
+boxplot_per_group(rna_plot_df, 'ENSG00000060709', assay_name, 'RIMBP2', 'Log-scaled intensity', phenotype = 'sample.description')
+```
+
+## GLT1D1
+```{r}
+boxplot_per_group(rna_plot_df, 'ENSG00000151948', assay_name, 'GLT1D1', 'Log-scaled intensity', phenotype = 'sample.description')
+```
+
+## RNF32-DT
+```{r}
+boxplot_per_group(rna_plot_df, 'ENSG00000182648', assay_name, 'RNF32-DT', 'Log-scaled intensity', phenotype = 'sample.description')
+```
+
+## NKX2-5
+```{r}
+boxplot_per_group(rna_plot_df, 'ENSG00000183072', assay_name, 'NKX2-5', 'Log-scaled intensity', phenotype = 'sample.description')
+```
+
+## FZD10
+```{r}
+boxplot_per_group(rna_plot_df, 'ENSG00000111432', assay_name, 'FZD10', 'Log-scaled intensity', phenotype = 'sample.description')
+```
+
+
+
+
+## Lipidomics Classes
+```{r}
+library(viridis)
+
+assay_name <- assay_names[grepl('Targeted', assay_names)]
+se <- experiments(mae)[assay_name]
+df <- as.data.frame(t(assays(se)[[1]]))
+
+
+
+feature_metadata <- data.frame(colnames(df))
+feature_metadata$Class <- sub("\\..*", "",  names(df))
+#feature_metadata$colnames.df. <- NULL
+rownames(feature_metadata) <- colnames(df)
+
+## Remove TG's
+feature_metadata <- data.frame(feature_metadata[feature_metadata$Class != "TG",])
+
+df <- df[, rownames(feature_metadata)]
+feature_metadata$colnames.df. <- NULL
+
+anno_col <- pheno_df[rownames(df),]
+anno_col <- anno_col[, "sample.description"]
+anno_col <- data.frame(anno_col)
+rownames(anno_col) <- rownames(df)
+
+df_heatmap <- data.frame(t(df))
+
+ann_colors <- list(
+  anno_col = setNames(viridis(length(unique(anno_col$anno_col))),
+                      levels(anno_col$anno_col)),
+  Class = setNames(viridis(length(unique(feature_metadata$Class))),
+                      levels(feature_metadata$Class))
+)
+
+## Function to make heatmap
+make_heatmap <- function(df){
+  ggp <- pheatmap(
+    df,
+    cluster_rows = T,
+    cluster_cols = T,
+    show_colnames = T,
+    show_rownames = F,
+    annotation_row = feature_metadata,
+    annotation_col = anno_col,
+    scale = "column",
+    #annotation_colors = ann_colors
+  
+  )
+  return(ggp)
+}
+
+ggp <- make_heatmap(df_heatmap)
+ggsave(filename = file.path(outdir, "Lipidomics_Heatmap_noTG.pdf"), ggp, width = 14, height = 12)
+```
+
+
+## Metabolite hits on MOFA factor 1
+
+### Glutamine
+```{r}
+assay_name <- assay_names[grepl('LUMC', assay_names)]
+metabolomics_plot_df <- prepare_boxplot_df(assay_name)
+
+boxplot_per_group(metabolomics_plot_df, 'pos_1799', assay_name, 'pos_1799', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+boxplot_per_group(metabolomics_plot_df, 'pos_1799', assay_name, 'pos_1799', 'Log-scaled intensity', phenotype = 'sex')
+boxplot_per_group(metabolomics_plot_df, 'pos_1799', assay_name, 'pos_1799', 'Log-scaled intensity', phenotype = 'culturing.strategy')
+boxplot_per_group(metabolomics_plot_df, 'pos_1799', assay_name, 'pos_1799', 'Log-scaled intensity', phenotype = 'cell.line.background')
+boxplot_per_group(metabolomics_plot_df, 'pos_1799', assay_name, 'pos_1799', 'Log-scaled intensity', phenotype = 'reprogramming.method')
+boxplot_per_group(metabolomics_plot_df, 'pos_1799', assay_name, 'pos_1799', 'Log-scaled intensity', phenotype = 'tissues.from.which.cells.were.derived')
+boxplot_per_group(metabolomics_plot_df, 'pos_1799', assay_name, 'pos_1799', 'Log-scaled intensity', color_group =  'reprogramming.method')
+boxplot_per_group(metabolomics_plot_df, 'pos_1799', assay_name, 'pos_1799', 'Log-scaled intensity', color_group =  'tissues.from.which.cells.were.derived')
+```
+
+### Doxycycline
+```{r}
+assay_name <- assay_names[grepl('LUMC', assay_names)]
+metabolomics_plot_df <- prepare_boxplot_df(assay_name)
+
+
+boxplot_per_group(metabolomics_plot_df, 'pos_2595', assay_name, 'Doxycline', 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+boxplot_per_group(metabolomics_plot_df, 'pos_2595', assay_name, 'Doxycline', 'Log-scaled intensity', phenotype = 'sex')
+boxplot_per_group(metabolomics_plot_df, 'pos_2595', assay_name, 'Doxycline', 'Log-scaled intensity', phenotype = 'culturing.strategy')
+boxplot_per_group(metabolomics_plot_df, 'pos_2595', assay_name, 'Doxycline', 'Log-scaled intensity', phenotype = 'cell.line.background')
+boxplot_per_group(metabolomics_plot_df, 'pos_2595', assay_name, 'Doxycline', 'Log-scaled intensity', phenotype = 'reprogramming.method')
+boxplot_per_group(metabolomics_plot_df, 'pos_2595', assay_name, 'Doxycline', 'Log-scaled intensity', phenotype = 'tissues.from.which.cells.were.derived')
+boxplot_per_group(metabolomics_plot_df, 'pos_2595', assay_name, 'Doxycline', 'Log-scaled intensity', color_group =  'reprogramming.method')
+boxplot_per_group(metabolomics_plot_df, 'pos_2595', assay_name, 'Doxycline', 'Log-scaled intensity', color_group =  'tissues.from.which.cells.were.derived')
+```
+
+
+```{r}
+cor_plot(metabolomics_plot_df$pos_1799, 
+         as.numeric(metabolomics_plot_df$PassageNumber),
+         'Metabolite levels', 'Passage numbers')
+```
+
+```{r}
+cor_plot(metabolomics_plot_df$pos_2595, 
+         as.numeric(metabolomics_plot_df$PassageNumber), 
+         'Metabolite levels', 'Passage numbers')
+```
+
+
+## Correlate Glutamine levels with transporter protein levels
+```{r}
+#Q15758 SLC1A5	Neutral amino acid transporter B(0)
+
+proteomics_plot_df_mtblmcs <- protein_plot_df[rownames(metabolomics_plot_df),]
+
+ggp_pos1799 <- cor_plot(metabolomics_plot_df$pos_1799, 
+         proteomics_plot_df_mtblmcs$Q15758,
+         'Glutamine metabolite (pos_1799) levels', 'SLC1A5 protein levels', title = ' ', method = 'spearman')
+
+
+ggp_pos1901 <- cor_plot(metabolomics_plot_df$pos_1901, 
+         proteomics_plot_df_mtblmcs$Q15758,
+         'Glutamine metabolite (pos_1901) levels', 'SLC1A5 protein levels', title = '', method = 'spearman')
+
+
+ggp_pos1708 <- cor_plot(metabolomics_plot_df$pos_1708, 
+         proteomics_plot_df_mtblmcs$Q15758,
+         'Glutamine metabolite (pos_1708) levels', 'SLC1A5 protein levels', title = 'Glutamine and SLCA1A5 correlation', method = 'spearman')
+
+
+ggsave(file.path(outdir, 'Gln_SLC1A4_Cor.pdf'), ggarrange(ggp_pos1708, ggp_pos1799, ggp_pos1901), width = 10)
+```
+
+```{r}
+#Q96QD8 SLC38A2	Sodium-coupled neutral amino acid symporter 2
+
+ggp_pos1799 <- cor_plot(metabolomics_plot_df$pos_1799, 
+         proteomics_plot_df_mtblmcs$Q96QD8,
+         'Glutamine metabolite (pos_1799) levels', 'SLC38A2 protein levels', 
+         title = ' ', 
+         method = 'spearman')
+
+
+ggp_pos1901 <- cor_plot(metabolomics_plot_df$pos_1901, 
+         proteomics_plot_df_mtblmcs$Q96QD8,
+         'Glutamine metabolite (pos_1901) levels', 'SLC38A2 protein levels', 
+         title = ' ',
+         method = 'spearman')
+
+
+ggp_pos1708 <- cor_plot(metabolomics_plot_df$pos_1708, 
+         proteomics_plot_df_mtblmcs$Q96QD8,
+         'Glutamine metabolite (pos_1708) levels', 'SLC38A2 protein levels', 
+         title = 'Glutamine and SLC38A2 correlation',
+         method = 'spearman')
+
+
+ggsave(file.path(outdir, 'Gln_SLC38A2_Cor.pdf'), ggarrange(ggp_pos1708, ggp_pos1799, ggp_pos1901), width = 10)
+```
+
+
+
+## Kinetin-9-riboside (putative)
+```{r}
+assay_name <- assay_names[grepl('LUMC', assay_names)]
+metabolomics_plot_df <- prepare_boxplot_df(assay_name)
+
+putative_annotation_id <- 'neg_5241'
+putative_annotation <- 'Kinetin-9-riboside'
+
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'sex')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'culturing.strategy')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'cell.line.background')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'reprogramming.method')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'tissues.from.which.cells.were.derived')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', color_group =  'reprogramming.method')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', color_group =  'tissues.from.which.cells.were.derived')
+```  
+
+
+## N6-Isopentenlyadenosine (putative)
+```{r}
+assay_name <- assay_names[grepl('LUMC', assay_names)]
+metabolomics_plot_df <- prepare_boxplot_df(assay_name)
+
+putative_annotation_id <- 'neg_1684'
+putative_annotation <- 'N6-Isopentenlyadenosine'
+
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'sex')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'culturing.strategy')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'cell.line.background')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'reprogramming.method')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'tissues.from.which.cells.were.derived')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', color_group =  'reprogramming.method')
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', color_group =  'tissues.from.which.cells.were.derived')
+```  
+```{r}
+cor_plot(metabolomics_plot_df$neg_5241, 
+         as.numeric(metabolomics_plot_df$PassageNumber), 
+         'Metabolite levels', 'Passage numbers')
+```
+
+```{r}
+cor_plot(metabolomics_plot_df$neg_1684, 
+         as.numeric(metabolomics_plot_df$PassageNumber),
+         'Metabolite levels', 'Passage numbers')
+```
+
+## Uridine-derivatives
+```{r}
+assay_name <- assay_names[grepl('LUMC', assay_names)]
+metabolomics_plot_df <- prepare_boxplot_df(assay_name)
+
+putative_annotation_id <- 'neg_71'
+putative_annotation <- 'Uridine monophosphate'
+
+boxplot_per_group(metabolomics_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+```
+
+
+```{r}
+assay_name <- assay_names[grepl('TML', assay_names)]
+metabolomics_TML_plot_df <- prepare_boxplot_df(assay_name)
+
+putative_annotation_id <- 'TML_neg6366'
+putative_annotation <- 'Uridine diphosphate glucose/galactose'
+
+boxplot_per_group(metabolomics_TML_plot_df, putative_annotation_id, assay_name, putative_annotation, 'Log-scaled intensity', phenotype = 'observation.unit.identifier.crispr', color_group = 'phenotype')
+```
+
+```{r}
+metabolomics_TML_plot_df <- metabolomics_TML_plot_df[rownames(metabolomics_plot_df),]
+
+cor_plot(metabolomics_plot_df$neg_71, 
+         metabolomics_TML_plot_df$TML_neg6366, 
+         'RUMC', 'LUMC', 
+         title = 'Correlation between RUMC and LUMC measurements')
+```
+
+
+
+## Plot RNA levels of genes with large deletion in DM1 patient 2 clone 2
+```{r}
+# RNA
+assay_name <- assay_names[grepl('RNAseq', assay_names)]
+rna_plot_df <- prepare_boxplot_df(assay_name)
+
+## CLEC4A is not present in the data
+
+## FOXJ2
+boxplot_per_group(rna_plot_df, 'ENSG00000065970', assay_name, 'FOXJ2', 'Log-scaled intensity', phenotype = 'sample.description')
+
+## NECAP1
+boxplot_per_group(rna_plot_df, 'ENSG00000089818', assay_name, 'NECAP1', 'Log-scaled intensity', phenotype = 'sample.description')
+
+## C3AR1
+boxplot_per_group(rna_plot_df, 'ENSG00000171860', assay_name, 'C3AR1', 'Log-scaled intensity', phenotype = 'sample.description')
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

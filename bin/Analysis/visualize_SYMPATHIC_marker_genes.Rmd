@@ -1,0 +1,199 @@
+---
+title: "Molecular Markers"
+output: html_document
+date: "2024-11-15"
+params:
+  outdir: Z:/data/iPSC_data/results/MolMarkers
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  SYMPATHIC_markers: Markers_files/Sympathic_marker_genes.csv
+  config_file: 'config.yml'
+---
+
+# Visualize results of linear modelling
+
+## Parameters
+```{r}
+print(params)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!dir.exists(outdir)){
+    outdir <- getwd()
+}
+```
+
+
+## Read data and metadata: MultiAssayExperiment
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+```
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+## Assay selection
+```{r}
+assay_names <- config$experiment_names$general_selection
+assay_names
+```
+
+
+## Phenotypic data
+```{r}
+pheno_df <- as.data.frame(colData(mae))
+```
+
+
+```{r}
+library(ggplot2)
+library(ggrepel)
+library(ggokabeito) # Okabe-Ito
+library(dplyr)
+```
+
+
+## Functions for plotting features per disease group
+```{r}
+source_paths <- c(
+  "../support_functions/Feature_plots.R",      # when running in Rstudio
+  "Feature_plots.R"          # when running in Nextflow
+)
+
+for (path in source_paths) {
+  if (file.exists(path)) {
+    source(path)
+    break
+  }
+}
+```
+
+
+## Sympathic markers
+```{r}
+sympathic_markers_df <- read.csv(params$SYMPATHIC_markers)
+```
+
+
+```{r, fig.width=10}
+# RNA
+assay_name <- assay_names[grepl('RNAseq', assay_names)]
+df_input <- prepare_boxplot_df(assay_name)
+feature_metadata <- as.data.frame(rowData(mae[[assay_name]]))
+sympathic_markers_df <- sympathic_markers_df %>%
+  left_join(feature_metadata[,c('feature', 'Gene_symbol')], by = 'Gene_symbol')
+sympathic_markers_df$Ensembl <- sympathic_markers_df$feature
+sympathic_markers_df$feature <- NULL
+sympathic_markers <- na.omit(sympathic_markers_df$Ensembl)
+
+lapply(sympathic_markers, function(x) {
+  gene_symbol <- sympathic_markers_df[sympathic_markers_df$Ensembl == x, 'Gene_symbol'] 
+  gene_symbol <- as.character(na.omit(gene_symbol))
+  boxplot_per_group(df_input, x, assay_name, gene_symbol, y_lab = 'log-scaled intensity',  phenotype = 'sample.description')
+})
+```
+
+
+```{r, fig.width=10}
+# PROTEIN
+assay_name <- assay_names[grepl('Prot', assay_names)]
+df_input <- prepare_boxplot_df(assay_name)
+feature_metadata <- as.data.frame(rowData(mae[[assay_name]]))
+feature_metadata$Uniprot <- rownames(feature_metadata)
+feature_metadata$Gene_symbol <- feature_metadata$gene_id
+sympathic_markers_df$Uniprot <- NULL
+sympathic_markers_df <- sympathic_markers_df %>%
+  left_join(feature_metadata[,c('Uniprot', 'Gene_symbol')], by = 'Gene_symbol')
+sympathic_markers <- na.omit(sympathic_markers_df$Uniprot)
+
+
+lapply(sympathic_markers, function(x) {
+  gene_symbol <- sympathic_markers_df[sympathic_markers_df$Uniprot == x, 1] 
+  gene_symbol <- as.character(na.omit(gene_symbol))
+  boxplot_per_group(df_input, x, assay_name, gene_symbol, y_lab = 'log-scaled intensity',  phenotype = 'sample.description')
+})
+```
+
+
+## Mean expression levels per gene / protein
+```{r}
+# RNA
+assay_name <- assay_names[grepl('RNAseq', assay_names)]
+se <- experiments(mae)[assay_name]
+df <- as.data.frame(t(assays(se)[[1]]))
+colmeans <- colMeans(df, na.rm = T)
+colmeans <- sort(colmeans)
+
+plot_data <- data.frame(
+  Column = factor(names(colmeans), levels = names(colmeans)),
+  Mean = as.numeric(colmeans)
+)
+
+plot_data$Label <- FALSE
+plot_data$Label[plot_data$Column %in% sympathic_markers_df$Ensembl] <- TRUE
+
+ggplot(plot_data, aes(x = Column, y = Mean)) +
+  geom_point(aes(color= Label), size =3) +
+  geom_line(group = 1, color = "gray") +
+  geom_text(data = subset(plot_data, Label),
+            aes(label = Column),
+            vjust = -0.5, hjust =0.5,
+            color =  "red", size = 4) +
+  scale_color_manual(values = c("black", "red"), guide = "none") +
+  theme_bw() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  labs(title = "Average gene expression levels",
+       x = 'Gene', y = 'Avr gene expression'
+      )
+  
+```
+
+
+```{r}
+# Proteins
+assay_name <- assay_names[grepl('Prot', assay_names)]
+se <- experiments(mae)[assay_name]
+df <- as.data.frame(t(assays(se)[[1]]))
+colmeans <- colMeans(df, na.rm = T)
+colmeans <- sort(colmeans)
+
+plot_data <- data.frame(
+  Column = factor(names(colmeans), levels = names(colmeans)),
+  Mean = as.numeric(colmeans)
+)
+
+plot_data$Label <- FALSE
+plot_data$Label[plot_data$Column %in% sympathic_markers_df$Uniprot] <- TRUE
+
+
+ggplot(plot_data, aes(x = Column, y = Mean)) +
+  geom_point(aes(color= Label), size =3) +
+  geom_line(group = 1, color = "gray") +
+  geom_text(data = subset(plot_data, Label),
+            aes(label = Column),
+            vjust = -0.5, hjust =0.5,
+            color =  "red", size = 4) +
+  scale_color_manual(values = c("black", "red"), guide = "none") +
+  theme_bw() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  labs(title = "Average protein levels",
+       x = 'Gene', y = 'Avr Prot expression'
+      )
+  
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

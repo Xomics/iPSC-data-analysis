@@ -1,0 +1,48 @@
+#' Match RNA Sample Names to Universal Identifiers
+#'
+#' This function standardizes RNA sample names and matches them to a universal naming scheme
+#' using an assay reference data frame. It cleans the sample names, looks them up in
+#' `isa_assay_rna`, and constructs universal identifiers with biological replicate info.
+#'
+#' @param sample_names A character vector of RNA sample names.
+#' @param isa_assay_rna A data frame containing assay metadata, including
+#' `assay identifier`, name, and biological replicate information.
+#'
+#' @return A character vector of universal RNA sample names.
+#'
+#' @examples
+#' match_rna_names(c("Xsample.01", "sample.02"), isa_assay_rna = my_assay_df)
+#'
+#' @export
+match_rna_names <- function(sample_names, isa_assay_rna) {
+  # Clean sample names: remove 'X', replace '.' with '-', append '_1'
+  cleaned_names <- gsub("p1c1rep", "p2c1rep", sample_names)
+  cleaned_names <- gsub("\\.", "-", cleaned_names)
+  cleaned_names <- gsub("^X", "", cleaned_names)
+  cleaned_names <- paste0(cleaned_names, "_1")
+  
+  # Match to assay identifiers in isa_assay_rna
+  universal_names <- sapply(cleaned_names, function(id) {
+    assay_row <- isa_assay_rna[isa_assay_rna$`assay identifier` == id, ]
+    
+    if (nrow(assay_row) == 0) {
+      return(NA_character_)  # Return NA if no match
+    }
+    
+    name_uni <- assay_row[[6]]
+    bio_rep  <- assay_row[[8]]
+    
+    paste0(name_uni, "_", bio_rep)
+  })
+  
+  # Replace '-' with '_'
+  universal_names <- gsub("-", "_", universal_names)
+  
+  # Prefix 'X' if name starts with '40'
+  universal_names <- sapply(universal_names, function(name) {
+    if (is.na(name)) return(NA_character_)
+    if (startsWith(name, "40")) paste0("X", name) else name
+  })
+
+  return(universal_names)
+}

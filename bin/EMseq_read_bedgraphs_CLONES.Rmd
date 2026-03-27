@@ -1,0 +1,39 @@
+---
+title: "Methrix"
+output: html_document
+---
+
+```{r}
+library(methrix)
+```
+
+```{r}
+hg38_cpgs <- methrix::extract_CPGs(ref_genome = 'BSgenome.Hsapiens.UCSC.hg38')
+```
+
+```{r}
+bdg_files <- list.files(
+  path = 'Z:/data/iPSC_data/EMseq_NewData/coverage/', 
+  #pattern = "*bedGraph\\.gz",
+  full.names = T
+)
+bdg_files[[1]]
+length(bdg_files)
+```
+
+```{r}
+meth <- methrix::read_bedgraphs(files = bdg_files, 
+                                ref_cpgs = hg38_cpgs, 
+                                pipeline = "Bismark_cov", 
+                                zero_based = FALSE, 
+                                stranded = T, 
+                                collapse_strands = T, 
+                                h5 = T, 
+                                h5temp = "Z:/data/iPSC_data/EMseq_NewData/")
+```
+
+
+```{r}
+save_HDF5_methrix(meth, 'Z:/data/iPSC_data/EMseq_NewData/h5_raw/', replace=T)
+```
+

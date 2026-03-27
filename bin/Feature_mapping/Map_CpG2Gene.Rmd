@@ -1,0 +1,159 @@
+---
+title: "Annotate_CpGs"
+output: html_document
+date: '2025-01-30'
+---
+
+```{r}
+library(openxlsx)
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(org.Hs.eg.db)
+```
+
+## Paths to Excel files
+```{r}
+Diseases_path <- 'C:/Users/Z896216/Documents/All_diseases_combined_MixedModel_Results.xlsx'
+CHD2_path <- 'C:/Users/Z896216/Documents/CHD2_MixedModel_Results.xlsx'
+NANS_path <- 'C:/Users/Z896216/Documents/NANS_MixedModel_Results.xlsx'
+DM1_path <- 'C:/Users/Z896216/Documents/DM1_MixedModel_Results.xlsx'
+DM1_rescue_path <- 'C:/Users/Z896216/Documents/DM1_rescue_MixedModel_Results.xlsx'
+DM1_P2_P3_path <- 'C:/Users/Z896216/Documents/DM1_P2_P3_MixedModel_Results.xlsx'
+Sex_path <- 'C:/Users/Z896216/Documents/Sex_MixedModel_Results.xlsx'
+```
+
+## Read Excel data
+```{r}
+Disease_methylation_data <- read.xlsx(Diseases_path, sheet = 'EMseq')
+CHD2_methylation_data <- read.xlsx(CHD2_path, sheet = 'EMseq')
+NANS_methylation_data <- read.xlsx(NANS_path, sheet = 'EMseq')
+DM1_methylation_data <- read.xlsx(DM1_path, sheet = 'EMseq')
+DM1_rescue_methylation_data <- read.xlsx(DM1_rescue_path, sheet = 'EMseq')
+DM1_P2_P3_methylation_data <- read.xlsx(DM1_P2_P3_path, sheet = 'EMseq')
+Sex_methylation_data <- read.xlsx(Sex_path, sheet = 'EMseq')
+```
+
+
+## Get CpG positions in GRanges object
+```{r}
+## Load annotations
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+genes <- genes(txdb)
+
+find_nearest_genes <- function(gene_locations) {
+  
+  split_positions <- strsplit(gene_locations, "_")
+
+  cpg_sites <- do.call(rbind, lapply(split_positions, function(x) data.frame(chr=x[1], start = as.numeric(x[2]))))
+  cpg_sites$chr <- paste0("chr", cpg_sites$chr)
+  cpg_sites$end <- cpg_sites$start
+  
+  gr_cpg_sites <- makeGRangesFromDataFrame(cpg_sites, keep.extra.columns = TRUE)
+  
+  ## Find nearest genes to cpg sites
+  nearest_genes <- nearest(gr_cpg_sites, genes)
+  nearest_genes_info <- genes[nearest_genes]
+  nearest_genes_df <- data.frame(nearest_genes_info)
+  ## Add gene symbols based on ENTREZ id
+  gene_symbols <- mapIds(org.Hs.eg.db, keys = as.character(nearest_genes_df$gene_id), column = "SYMBOL", keytype = "ENTREZID", multiVals = "first")
+  nearest_genes_df$gene_symbol <- gene_symbols
+
+  ## Combine data frames
+  cpg_with_genes <- cbind(as.data.frame(gr_cpg_sites), nearest_genes_df)
+
+  
+  return(cpg_with_genes)
+
+}
+```
+
+## Find nearest genes for the Disease vs Healthy results
+```{r}
+cpg_with_genes_Disease <- find_nearest_genes(Disease_methylation_data$feature)
+
+## Add entrez ID and gene symbols to Mixed Model results
+Disease_methylation_data$EntrezID <- cpg_with_genes_Disease$gene_id
+Disease_methylation_data$Gene_symbol <- cpg_with_genes_Disease$gene_symbol
+```
+
+
+## Find nearest genes for the CHD2 vs Healthy results
+```{r}
+cpg_with_genes_CHD2 <- find_nearest_genes(CHD2_methylation_data$feature)
+
+CHD2_methylation_data$EntrezID <- cpg_with_genes_CHD2$gene_id
+CHD2_methylation_data$Gene_symbol <- cpg_with_genes_CHD2$gene_symbol
+
+```
+
+
+## Add the same gene symbols for DM1
+```{r}
+if (identical(CHD2_methylation_data$feature, DM1_methylation_data$feature)) {
+  DM1_methylation_data$EntrezID <- cpg_with_genes_CHD2$gene_id
+  DM1_methylation_data$Gene_symbol <- cpg_with_genes_CHD2$gene_symbol
+}
+
+cpg_with_genes_DM1_rescue <- find_nearest_genes(DM1_rescue_methylation_data$feature)
+DM1_rescue_methylation_data$EntrezID <- cpg_with_genes_DM1_rescue$gene_id
+DM1_rescue_methylation_data$Gene_symbol <- cpg_with_genes_DM1_rescue$gene_symbol
+
+```
+
+
+## Add the same gene symbols for NANS
+```{r}
+if (identical(CHD2_methylation_data$feature, NANS_methylation_data$feature)) {
+  NANS_methylation_data$EntrezID <- cpg_with_genes_CHD2$gene_id
+  NANS_methylation_data$Gene_symbol <- cpg_with_genes_CHD2$gene_symbol
+}
+```
+
+
+## Add the same gene symbols for Sex-associations
+```{r}
+cpg_with_genes_sex <- find_nearest_genes(Sex_methylation_data$feature)
+Sex_methylation_data$EntrezID <- cpg_with_genes_sex$gene_id
+Sex_methylation_data$Gene_symbol <- cpg_with_genes_sex$gene_symbol
+```
+
+
+# Save results to same Excel file
+```{r}
+wb <- loadWorkbook(file = Diseases_path)
+writeData(wb, sheet = 'EMseq', x = Disease_methylation_data, withFilter = F)
+saveWorkbook(wb, Diseases_path, overwrite = T)
+```
+
+
+```{r}
+wb <- loadWorkbook(CHD2_path)
+writeData(wb, sheet = 'EMseq', x = CHD2_methylation_data, withFilter = F)
+saveWorkbook(wb, CHD2_path, overwrite = T)
+```
+
+
+```{r}
+wb <- loadWorkbook(NANS_path)
+writeData(wb, sheet = 'EMseq', x = NANS_methylation_data, withFilter = F)
+saveWorkbook(wb, NANS_path, overwrite = T)
+```
+
+
+```{r}
+wb <- loadWorkbook(DM1_path)
+writeData(wb, sheet = 'EMseq', x = DM1_methylation_data, withFilter = F)
+saveWorkbook(wb, DM1_path, overwrite = T)
+
+wb <- loadWorkbook(DM1_rescue_path)
+writeData(wb, sheet = 'EMseq', x = DM1_rescue_methylation_data, withFilter = F)
+saveWorkbook(wb, DM1_rescue_path, overwrite = T)
+```  
+
+
+```{r}
+wb <- loadWorkbook(Sex_path)
+writeData(wb, sheet = 'EMseq', x = Sex_methylation_data, withFilter = F)
+saveWorkbook(wb, Sex_path, overwrite = T)
+```
+

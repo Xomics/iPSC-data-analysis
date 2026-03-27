@@ -1,0 +1,149 @@
+---
+title: "Meth Correlations iPSC iNeurons"
+output: html_document
+date: "2025-12-18"
+params:   
+  meth_iPSC: Z:/data/iPSC_data/iPSC_EMseq_NewData/Processed/Methrix/h5_QC_SNP_filtered
+  meth_iNeuron: Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_QC_SNP_filtered_sub_SD/
+  outdir: Z:/data/iPSC_data/Results/DMR/iPSC_Stage
+---
+
+```{r}
+library(methrix)
+```
+
+
+```{r}
+print(params)
+```
+
+```{r}
+outdir <- params$outdir
+
+if (!dir.exists(outdir)){
+  outdir <- getwd()
+}
+```
+
+
+```{r}
+# Load methrix object with iPSC stage data
+meth_iPSC <- methrix::load_HDF5_methrix(params$meth_iPSC)
+
+# Load methrix object with iNeuron stage data
+meth_iNeuron <- methrix::load_HDF5_methrix(params$meth_iNeuron)
+```
+
+
+```{r}
+feature_metadata_iNeuron <- elementMetadata(meth_iNeuron)
+feature_metadata_iNeuron <- as.data.frame(feature_metadata_iNeuron)
+rownames(feature_metadata_iNeuron) <- paste0(feature_metadata_iNeuron$chr, '_', feature_metadata_iNeuron$start)
+    
+## Measurement data
+beta_values_df_iNeuron <- assays(meth_iNeuron)[[1]]
+rownames(beta_values_df_iNeuron) <- rownames(feature_metadata_iNeuron)
+```
+
+
+```{r}
+feature_metadata_iPSC <- elementMetadata(meth_iPSC)
+feature_metadata_iPSC <- as.data.frame(feature_metadata_iPSC)
+rownames(feature_metadata_iPSC) <- paste0(feature_metadata_iPSC$chr, '_', feature_metadata_iPSC$start)
+    
+## Measurement data
+beta_values_df_iPSC <- assays(meth_iPSC)[[1]]
+rownames(beta_values_df_iPSC) <- rownames(feature_metadata_iPSC)
+```
+
+
+```{r}
+beta_values_df_iPSC_sub <- as.data.frame(beta_values_df_iPSC)[rownames(as.data.frame(beta_values_df_iNeuron)),]
+```
+
+
+iNeuron data to rowMeans
+```{r}
+beta_values_df_iNeuron_DM1_P2 <- as.data.frame(beta_values_df_iNeuron)[ , c('WI-3791-DM1-p2c1-Epigenomics-1_1_val_1_bismark_bt2_pe',
+                                                                           'WI-3791-DM1-p2c1-Epigenomics-2_1_val_1_bismark_bt2_pe',
+                                                                           'WI-3791-DM1-p2c2-Epigenomics-1_1_val_1_bismark_bt2_pe',
+                                                                           'WI-3791-DM1-p2c2-Epigenomics-2_1_val_1_bismark_bt2_pe',
+                                                                           'WI-3791-DM1-p2c2-Epigenomics-3_1_val_1_bismark_bt2_pe',
+                                                                           'WI-3791-DM1-p2c3-Epigenomics-1_1_val_1_bismark_bt2_pe',
+                                                                           'WI-3791-DM1-p2c3-Epigenomics-2_1_val_1_bismark_bt2_pe',
+                                                                           'WI-3791-DM1-p2c3-Epigenomics-3_1_val_1_bismark_bt2_pe')]
+
+beta_values_df_iNeuron_DM1_P2$Clone1 <- rowMeans(beta_values_df_iNeuron_DM1_P2[ ,c('WI-3791-DM1-p2c1-Epigenomics-1_1_val_1_bismark_bt2_pe',
+                                                                          'WI-3791-DM1-p2c1-Epigenomics-2_1_val_1_bismark_bt2_pe')])
+
+beta_values_df_iNeuron_DM1_P2$Clone2 <- rowMeans(beta_values_df_iNeuron_DM1_P2[ ,c('WI-3791-DM1-p2c2-Epigenomics-1_1_val_1_bismark_bt2_pe',
+                                                                           'WI-3791-DM1-p2c2-Epigenomics-2_1_val_1_bismark_bt2_pe',
+                                                                           'WI-3791-DM1-p2c2-Epigenomics-3_1_val_1_bismark_bt2_pe')])
+
+beta_values_df_iNeuron_DM1_P2$Clone3 <- rowMeans(beta_values_df_iNeuron_DM1_P2[ ,c('WI-3791-DM1-p2c3-Epigenomics-1_1_val_1_bismark_bt2_pe',
+                                                                           'WI-3791-DM1-p2c3-Epigenomics-2_1_val_1_bismark_bt2_pe',
+                                                                           'WI-3791-DM1-p2c3-Epigenomics-3_1_val_1_bismark_bt2_pe')])
+
+beta_values_df_iNeuron_DM1_P2 <- beta_values_df_iNeuron_DM1_P2[, c("Clone1", "Clone2", "Clone3")]
+```
+
+
+```{r}
+library(ggplot2)
+cor_plot <- function(x, y, x_lab, y_lab, title = "Correlation") {
+  
+  ## Pearson correlation
+  cor_value <- cor(x, y, use = 'complete.obs', method= 'spearman')
+
+  ## ggplot
+  ggp <- ggplot(data.frame(x, y), aes(x=x, y=y)) +
+    geom_point(alpha =0.6, size=2) +
+    geom_smooth(method = "lm", se = T, color = "#2C3E50", fill = "#3498DB") +
+    annotate("text",
+             x = Inf, y = -Inf,
+             label = paste0("r = ", round(cor_value, 3)),
+             hjust =1.1, vjust = -0.5,
+             size = 4.5,
+             fontface = "italic") +
+    labs(title = title,
+         x = x_lab, y = y_lab) +
+    theme_minimal()
+  
+  return(ggp)
+
+}
+ggp <- cor_plot(beta_values_df_iNeuron_DM1_P2$Clone1, beta_values_df_iPSC_sub$`YI-4419-iPS20-00035_1_val_1_bismark_bt2_pe`, 
+         x_lab = 'iNeuron', y_lab = 'iPSC',
+         title = 'Pearson correlation of 100,000 most variable CpGs\nclone 1 iPSC and iNeurons')
+ggp
+ggsave(file.path(outdir, 'Clone1_Cor_SubsetSD.pdf'), ggp)
+```
+
+```{r}
+ggp <- cor_plot(beta_values_df_iNeuron_DM1_P2$Clone2, beta_values_df_iPSC_sub$`YI-4419-iPS23-00089_1_val_1_bismark_bt2_pe`, 
+         x_lab = 'iNeuron', y_lab = 'iPSC',
+         title = 'Pearson correlation of 100,000 most variable CpGs\nclone 2 iPSC and iNeurons')
+ggp
+ggsave(file.path(outdir, 'Clone2_Cor_SubsetSD.pdf'), ggp)
+```
+
+```{r}
+ggp <- cor_plot(beta_values_df_iNeuron_DM1_P2$Clone3, beta_values_df_iPSC_sub$`YI-4419-iPS23-00088_1_val_1_bismark_bt2_pe`, 
+         x_lab = 'iNeuron', y_lab = 'iPSC',
+         title = 'Pearson correlation of 100,000 most variable CpGs\nclone 3 iPSC and iNeurons')
+ggp
+ggsave(file.path(outdir, 'Clone3_Cor_SubsetSD.pdf'), ggp)
+```
+
+```{r}
+colnames(beta_values_df_iNeuron_DM1_P2) <- c('Clone1_Neuron', 'Clone2_Neuron', 'Clone3_Neuron')
+colnames(beta_values_df_iPSC_sub) <- c('Clone1_iPSC', 'Clone3_iPSC', 'Clone2_iPSC')
+
+beta_values_df_combined <- cbind(beta_values_df_iNeuron_DM1_P2, beta_values_df_iPSC_sub)
+
+cor_matrix <- cor(beta_values_df_combined, use ='pairwise.complete.obs', method = 'spearman')
+
+ggp <- pheatmap::pheatmap(cor_matrix)
+
+ggsave(file.path(outdir, 'Cor_matrix.pdf'), ggp)
+```

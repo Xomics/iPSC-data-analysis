@@ -1,0 +1,127 @@
+---
+title: "RNAseq2Tabular"
+output: html_document
+params:
+  mrna_deseq_data: Z:/data/iPSC_data/iPSC_RNAseq/iPSC_USEQ_processed/KUL9276_processed/featureCounts/KUL9276_processed_featureCounts_deseq2.csv
+  mrna_cpm_data: Z:/data/iPSC_data/iPSC_RNAseq/iPSC_USEQ_processed/KUL9276_processed/featureCounts/KUL9276_processed_featureCounts_cpm.csv
+  mrna_rpkm_data: Z:/data/iPSC_data/iPSC_RNAseq/iPSC_USEQ_processed/KUL9276_processed/featureCounts/KUL9276_processed_featureCounts_RPKM.csv
+  mrna_read_data: Z:/data/iPSC_data/iPSC_RNAseq/iPSC_USEQ_processed/KUL9276_processed/featureCounts/KUL9276_processed_exon_featureCounts.raw.txt
+  outdir: Z:/data/iPSC_data/iPSC_MAE
+ 
+---
+
+## Read processed RNAseq data and save to tabular formats for the MultiAssayExperiment object
+
+#### Script parameters
+```{r}
+print(Sys.Date())
+print(params)
+```
+
+
+### Read data
+```{r}
+mrna_deseq <- read.csv(params$mrna_deseq_data, row.names = 1)
+mrna_cpm <- read.csv(params$mrna_cpm_data, row.names = 1)
+#mrna_rkpm <- read.csv(params$mrna_rkpm_data, row.names = 1)
+```
+
+
+### Read count data with feature metadata
+```{r}
+mrna_read_data <- read.csv(params$mrna_read_data, row.names = 1, sep = '\t')
+feature_metadata <- mrna_read_data[, c(1:6)]
+```
+
+
+
+## CPM
+### Remove mRNA with only 0 (rows)
+```{r}
+mrna_cpm_filtered <- mrna_cpm[rowSums(mrna_cpm != 0) > 0, , drop=FALSE] 
+mrna_cpm_filtered <- data.frame(t(mrna_cpm_filtered))
+head(mrna_cpm_filtered[, 1:5])
+dim(mrna_cpm_filtered)
+``` 
+
+### Log transformation
+```{r}
+mrna_cpm_filtered_log <- log(mrna_cpm_filtered + 1)
+```
+
+
+### Visualize missingness in data
+```{r}
+source("support_functions/heatmap_missingness.R")
+heatmap_missing(mrna_cpm_filtered_log, 'RNAseq')
+```
+
+
+## DESeq2
+### Remove mRNA with only 0 (rows)
+```{r}
+mrna_deseq_filtered <- mrna_deseq[rowSums(mrna_deseq != 0) > 0, , drop=FALSE] 
+mrna_deseq_filtered <- data.frame(t(mrna_deseq_filtered))
+head(mrna_deseq_filtered[, 1:5])
+dim(mrna_deseq_filtered)
+
+
+# Log transform DeSeq data
+mrna_deseq_filtered_log <- log(mrna_deseq_filtered + 1)
+
+``` 
+
+## Additional filter step to remove features that are 0 in more than 50% of the samples
+```{r}
+filter_zeros <- function(data, threshold = 0.1) {
+
+  zero_counts <- colSums(as.matrix(data) == 0)
+  total_samples <- nrow(data)
+  proportion_zeros <- zero_counts / total_samples
+  
+  data_filtered <- data[, proportion_zeros <= threshold]
+  return(data_filtered)
+}
+
+
+# Filter features for both CPM and DESeq data
+mrna_cpm_filtered_log_filtered <- filter_zeros(mrna_cpm_filtered_log)
+mrna_deseq_filtered_log_filtered <- filter_zeros(mrna_deseq_filtered_log)
+```
+
+
+
+## Plot distributions
+```{r}
+source("support_functions/PlotDistributions2.R")
+
+PlotDistributions(mrna_cpm_filtered, type = 'hist', main_title = 'CPM' )
+PlotDistributions(mrna_deseq_filtered, type = 'hist', main_title = 'DeSEQ' )
+PlotDistributions(mrna_cpm_filtered_log, type = 'hist', main_title = 'CPM Log' )
+PlotDistributions(mrna_deseq_filtered_log, type = 'hist', main_title = 'DeSEQ Log' )
+PlotDistributions(mrna_cpm_filtered_log_filtered, type = 'hist', main_title = 'CPM Log filtered' )
+PlotDistributions(mrna_deseq_filtered_log_filtered, type = 'hist', main_title = 'DeSEQ Log filtered' )
+
+
+```
+
+
+## Subset feature metadata on features that are still present after filtering
+```{r}
+feature_metadata <- feature_metadata[colnames(mrna_cpm_filtered_log_filtered),]
+```
+
+
+
+## Save data to .CSV
+```{r}
+write.csv(mrna_deseq_filtered_log_filtered, file.path(params$outdir, 'mrna_dseq_log.csv'))
+write.csv(mrna_cpm_filtered_log_filtered, file.path(params$outdir, 'mrna_cpm_log.csv'))
+write.csv(feature_metadata, file.path(params$outdir, 'mrna_feature_metadata.csv'))
+```
+
+
+```{r}
+sessionInfo()
+```
+

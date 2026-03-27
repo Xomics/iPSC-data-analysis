@@ -1,0 +1,282 @@
+---
+title: "Pathway enrichment enrichment analysis on Linear Mixed Models results"
+author:
+  - Casper de Visser^[Radboud university medical center, Casper.devisser@radboudumc.nl]
+output:
+  html_document:
+    df_print: paged
+params:
+    indir: Z:/data/iPSC_data/results/MixedModels/
+---
+
+## Libraries
+```{r}
+library(dplyr)
+library(GenomicRanges)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(biomaRt)
+require(ggplot2)
+require(stringr)
+library(multiGSEA)
+library(org.Hs.eg.db)
+
+max_num_pathways <- 20
+```
+
+
+## Load data
+Loadings (ranks) and feature metadata
+```{r}
+MOFA_Loadings <- params$indir
+
+#RNAseq_loadings <- openxlsx::read.xlsx(file.path(MOFA_Loadings, 'factorweights_RNAseq___RTC.xlsx'), rowNames = F)
+#Proteomics_loadings <- openxlsx::read.xlsx(file.path(MOFA_Loadings, 'factorweights_Proteomics.xlsx'), rowNames = F)
+#EMseq_loadings <- openxlsx::read.xlsx(file.path(MOFA_Loadings, 'factorweights_EMseq___100_000_most_variable_CpG_sites.xlsx'), rowNames = F)
+
+RNAseq_loadings <- read.csv(file.path(MOFA_Loadings, 'factorweights_RNAseq___RTC.csv'), row.names = 1)
+Proteomics_loadings <- read.csv(file.path(MOFA_Loadings, 'factorweights_Proteomics.csv'), row.names = 1)
+EMseq_loadings <- read.csv(file.path(MOFA_Loadings, 'factorweights_EMseq___100_000_most_variable_CpG_sites.csv'), row.names = 1)
+```
+
+
+## Functions
+```{r}
+source('../support_functions/GSEA_functions.R')
+```
+
+## Map CpG sites to nearest genes (ENSEMBL ids)
+```{r}
+# Map gene IDs to Ensembl IDs
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mapping <- getBM(
+    attributes = c('ensembl_gene_id', 'hgnc_symbol'),
+    filters = 'hgnc_symbol',
+    values = unique(EMseq_loadings$Gene_symbol),
+    mart = ensembl
+)
+
+# Clean mapping: keep only 1:1 hgnc -> ensembl mappings
+mapping_clean <- mapping %>%
+  group_by(hgnc_symbol) %>%
+  dplyr::filter(n() == 1) %>%
+  ungroup()
+
+# Map using the clean 1:1 mapping (match returns NA automatically if not found)
+EMseq_loadings$Ensembl <- mapping_clean$ensembl_gene_id[
+  match(EMseq_loadings$Gene_symbol, mapping_clean$hgnc_symbol)
+]
+```
+
+
+## Get pathways
+
+Pathways for different omics are loaded with `multiGSEA` [@Canzler2020].
+https://bioconductor.org/packages/release/bioc/vignettes/multiGSEA/inst/doc/multiGSEA.html
+
+```{r, message=FALSE, warning=FALSE}
+#metabolomics_id_type <- "HMDB"
+proteomics_id_type <- "UNIPROT"
+transcriptomics_id_type <- "ENSEMBL"
+
+# get pathways
+pathways <- getMultiOmicsFeatures(
+  dbs = c('kegg', 'wikipathways', 'reactome'), #'panther', 'pharmgkb', 'reactome'
+  #layer = omics_layers,
+  returnTranscriptome = transcriptomics_id_type,
+  returnProteome = proteomics_id_type,
+  #returnMetabolome = metabolomics_id_type, 
+  organism = "hsapiens",
+  useLocal = F)
+
+# see first few pathways
+lapply(1:length(pathways), function(l) { head(pathways[[l]], 1) })
+```
+
+
+```{r} 
+EMseq_loadings_clean <- as.data.frame(EMseq_loadings)
+
+EMseq_loadings_summed <- as.data.frame(EMseq_loadings) %>%
+  dplyr::filter(!is.na(Ensembl)) %>%
+  group_by(Ensembl) %>%
+  summarise(
+    Factor2 = weighted.mean(Factor2, w = abs(Factor2)),  # weight by strength of signal
+    n_CpGs  = n(),
+    .groups = "drop"
+  ) %>%
+  as.data.frame()
+
+# Join Gene_symbol back
+gene_map <- EMseq_loadings %>%
+  filter(!is.na(Ensembl)) %>%
+  dplyr::select(Ensembl, Gene_symbol) %>%
+  distinct(Ensembl, .keep_all = TRUE)
+
+EMseq_loadings_summed <- EMseq_loadings_summed %>%
+  left_join(gene_map, by = "Ensembl")
+
+EMseq_loadings_summed$feature <- EMseq_loadings_summed$Ensembl
+EMseq_loadings_ranks <- get_ranks_vector(EMseq_loadings_summed, "Factor2", col = 'Ensembl')
+EMseq_enrichments <- multiGSEA_new(pathways, EMseq_loadings_ranks, scoreType = "std")
+EMseq_enrichments_df <-EMseq_enrichments$transcriptome
+```
+
+
+### Add feature column
+```{r}
+RNAseq_loadings$feature <- rownames(RNAseq_loadings)
+Proteomics_loadings$feature <- rownames(Proteomics_loadings)
+EMseq_loadings_summed$feature <- EMseq_loadings_summed$Ensembl
+```
+
+
+
+
+
+## Perform GSEA for RNAseq loadings
+```{r}
+# Create ranks for all factors
+factors <- paste0("Factor", 1:4)
+RNAseq_ranks <- lapply(factors, function(f) {
+  get_ranks_vector(RNAseq_loadings, f)
+})
+names(RNAseq_ranks) <- factors
+
+# Run enrichment analysis for all factors
+RNAseq_enrichments <- lapply(RNAseq_ranks, function(ranks) {
+  multiGSEA_new(pathways, ranks)
+})
+
+# Extract transcriptome data
+df_enrichments_rna <- lapply(RNAseq_enrichments, function(x) x[["transcriptome"]])
+names(df_enrichments_rna) <- factors
+```
+
+
+## Perform GSEA for protein loadings
+```{r, warning=FALSE}
+# Create ranks for all factors
+factors <- paste0("Factor", 1:4)
+Prot_ranks <- lapply(factors, function(f) {
+  get_ranks_vector(Proteomics_loadings, f)
+})
+names(Prot_ranks) <- factors
+
+# Run enrichment analysis for all factors
+Prot_enrichments <- lapply(Prot_ranks, function(ranks) {
+  multiGSEA_new(pathways, ranks)
+})
+
+# Extract transcriptome data
+df_enrichments_prot <- lapply(Prot_enrichments, function(x) x[["proteome"]])
+names(df_enrichments_prot) <- factors
+```
+
+
+
+## Plot significantly enriched pathways per omics and component
+
+Significant pathways
+```{r}
+get_df_signif_enrich <- function(enrichments) {
+  
+  ## Plot significantly enriched pathways per omics and component
+  ## Extract transcriptome data and filter for significant pathways
+  enrichments_signif <- lapply(names(enrichments), function(factor) {
+    df <- enrichments[[factor]]
+    df_signif <- prepare_sign_hits_df(df)
+    if (nrow(df_signif) > 0) {
+      df_signif$Factor <- factor
+    }
+    return(df_signif)
+  })
+
+  ## Remove empty dataframes and combine
+  enrichments_signif <- enrichments_signif[sapply(enrichments_signif, nrow) > 0]
+
+  ## Use bind_rows to handle different structures
+  df_signif <- bind_rows(enrichments_signif)
+  return(df_signif)
+}
+
+df_signif_rna <- get_df_signif_enrich(df_enrichments_rna)
+df_signif_prot <- get_df_signif_enrich(df_enrichments_prot)
+```
+
+
+```{r}
+## Prepare plot data for all databases
+databases <- c("KEGG", "REACTOME", "WIKIPATHWAYS")
+```
+
+
+RNAseq
+```{r}
+plot_enrichments_factor <- function(df_enrich, Factor_n, assay_name) {
+  
+  plots <- lapply(databases, function(db) {
+    prepare_plot_df(df_enrich[df_enrich$Factor == Factor_n,], db = db)
+  })
+  names(plots) <- databases
+  
+  ## Plot top pathways per database
+  lapply(plots, function(plot_df) {
+    plot_patwhays(plot_df, assay_name)
+  })
+}
+
+
+plot_enrichments_factor(df_signif_rna, 'Factor1', 'RNAseq')
+plot_enrichments_factor(df_signif_rna, 'Factor2', 'RNAseq')
+```
+
+
+Proteomics
+```{r}
+plot_enrichments_factor(df_signif_prot, 'Factor1', 'Proteomics')
+plot_enrichments_factor(df_signif_prot, 'Factor2', 'Proteomics')
+```
+
+EMseq data
+```{r}
+plot_enrichments_factor(df_signif_emseq, 'Factor1', 'EMseq')
+plot_enrichments_factor(df_signif_emseq, 'Factor2', 'EMseq')
+```
+
+
+
+```{r}
+df_signif_rna <- translateLeadingEdgeGenes(df_signif_rna, RNAseq_loadings, 12)
+df_signif_prot_F1 <- translateLeadingEdgeGenes(df_signif_prot_F1, Proteomics_loadings, 9)
+df_signif_prot_F2 <- translateLeadingEdgeGenes(df_signif_prot_F2, Proteomics_loadings, 9)
+
+
+EMseq_feature_metadata <- EMseq_loadings %>%
+  distinct(feature, .keep_all = TRUE) %>%
+  filter((!is.na(feature)))
+df_signif_meth <- translateLeadingEdgeGenes(df_signif_meth, EMseq_feature_metadata, 10)
+```
+
+
+
+## Save to .csv
+```{r}
+df_signif_prot$leadingEdge <- NULL
+df_signif_rna$leadingEdge <- NULL
+df_signif_meth$leadingEdge <- NULL
+
+
+write.csv(df_signif_prot, 'GSEA_MOFA_Factor2_Proteomics.csv')
+write.csv(df_signif_rna, 'GSEA_MOFA_Factor2_RNAseq.csv')
+write.csv(df_signif_meth, 'GSEA_MOFA_Factor2_EMseq.csv')
+```
+
+
+## Session information
+
+```{r}
+sessionInfo()
+```
+
+
+## References

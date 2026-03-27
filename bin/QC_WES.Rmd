@@ -1,0 +1,63 @@
+---
+title: "QC_WES"
+author: "Cenna Doornbos"
+output: html_document
+params:
+  cnv_wes_ed_data_tab: Z:/data/iPSC_data/iPSC_CNV-WES/Data_integration/cnv_ed.csv
+  metadata: ~/ipsc-data-analysis/20240514_Xomics iPSC Neurons_new_READ-ONLY.xlsx
+---
+
+## Additional QC analysis for WES data
+
+#### Script parameters
+```{r, params}
+print(Sys.Date())
+print(params)
+```
+### Libraries
+```{r, read data}
+library(readxl)
+library(tidyverse)
+library(ggrepel)
+library(plotly)
+```
+
+### read data
+```{r, read data}
+data_frame_ed <- read.csv(params$cnv_wes_ed_data_tab)
+
+metadata_wes <- read_excel(params$metadata, sheet = "Assay - genomics") %>%
+  left_join(read_excel(params$metadata, sheet = "Sample - Induced pluripoten "), by = "sample identifier", suffix = c("_gen", "_sam")) %>%
+  left_join(read_excel(params$metadata, sheet = "ObservationUnit"), by = "observation unit identifier", suffix = c("", "_OU")) %>%
+  mutate("sample_name" = gsub("_Genomics", "", `assay identifier`), .after = "assay identifier")
+```
+
+
+```{r, sex match}
+# adapt data to generate figure
+df <- data_frame_ed %>%
+  filter(chromosome == "X" | chromosome == "Y") %>%
+  group_by(sample_name, chromosome) %>%
+  summarise("n" = n(), .groups = "keep") %>%
+  pivot_wider(id_cols = sample_name, names_from = chromosome, values_from = n, values_fill = 0) %>%
+  mutate("measured sex" = if_else(Y > 1, "male", "female")) %>%
+  left_join(metadata_wes, by = "sample_name") %>%
+  dplyr::rename("sex" = gender) %>%
+  mutate("label" = ifelse(`measured sex` != sex, sample_name, ""))
+  
+
+#generate sex match figure
+p <- ggplot(df, aes(X, Y, colour = sex, label = label, text = sample_name, shape = `measured sex`)) +
+  # geom_point(size = 4, alpha = 0.4, stroke = NA) +
+  geom_jitter(size = 4, alpha = 0.4, stroke = NA) +
+  geom_hline(yintercept = 2) +
+  labs(x = "X chromosome", y = "Y chromosome", title = "WES determined sex") +
+  theme_minimal()
+
+#save figure with labels
+ggsave("Z:/data/iPSC_data/Results/QC/WES determined sex.pdf",
+       plot = p + geom_text_repel(), width = 7, height = 7)
+
+#display figure
+ggplotly(p, tooltip = c("text", "colour", "shape"))
+```

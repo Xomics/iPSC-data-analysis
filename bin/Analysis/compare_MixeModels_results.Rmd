@@ -1,0 +1,185 @@
+---
+title: "RLM_plot_results"
+output: html_document
+date: "2024-11-15"
+params:
+  outdir: Z:/data/iPSC_data/results/MixedModels_CORRECTED/Plots
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  config_file: 'config.yml'
+---
+
+# Visualize results of linear modelling
+
+## Parameters
+```{r}
+print(params)
+outdir <- params$outdir
+```
+
+## Directories of Mixed Models results
+```{r}
+## Normal results
+MixedModels_dir <- 'MixedModelsMerged_Uncorrected'
+
+
+## Corrected for MOFA factors 1 and 2
+Corrected_MixedModels_dir <- 'MixedModelsMerged_Corrected'
+```
+
+
+## Read data and metadata: MultiAssayExperiment
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+```
+
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+## Assay selection
+```{r}
+assay_names <- config$experiment_names$general_selection
+assay_names
+```
+
+
+## Phenotypic data
+```{r}
+pheno_df <- as.data.frame(colData(mae))
+```
+
+
+## Uncorrected data
+
+Read nested mixed models (disease-specific associations)
+```{r}
+MixedModel_phenotype <-  read.csv(file.path(MixedModels_dir, 'Model_phenotype.csv'), row.names=1)
+MixedModel_phenotype$df <- NULL
+```
+
+DM1 separate model with rescue line
+```{r}
+MixedModel_DM1 <- read.csv(file.path(MixedModels_dir, 'MixedModels_DM1_Rescue.csv'), row.names = 1)
+MixedModel_DM1 <- MixedModel_DM1[  , match(colnames(MixedModel_phenotype), colnames(MixedModel_DM1))]
+```
+
+
+## Corrected data
+
+Read nested mixed models (disease-specific associations)
+```{r}
+MixedModel_CORRECTED_phenotype <-  read.csv(file.path(Corrected_MixedModels_dir, 'Model_phenotype.csv'), row.names=1)
+MixedModel_CORRECTED_phenotype$df <- NULL
+```
+
+DM1 separate model with rescue line
+```{r}
+MixedModel_CORRECTED_DM1 <- read.csv(file.path(Corrected_MixedModels_dir, 'MixedModels_DM1_Rescue.csv'), row.names = 1)
+MixedModel_CORRECTED_DM1 <- MixedModel_CORRECTED_DM1[  , match(colnames(MixedModel_phenotype), colnames(MixedModel_DM1))]
+```
+
+
+## Compare ranks of models
+```{r}
+source('../support_functions/Feature_plots.R')
+```
+```{r}
+MixedModel_DM1_Prot <- MixedModel_DM1[MixedModel_DM1$Assay == 'Proteomics',]
+MixedModel_CORRECTED_DM1_Prot <- MixedModel_CORRECTED_DM1[MixedModel_CORRECTED_DM1$Assay == 'Proteomics',]
+
+merged_df <-merge(MixedModel_DM1_Prot, MixedModel_CORRECTED_DM1_Prot, by = 'feature')
+
+cor_plot(merged_df$rank.x, merged_df$rank.y, x_lab = 'Uncorrected_pvalue', y_lab = 'Corrected_pvalue', 'DM1')
+```
+
+```{r}
+MixedModel_CHD2_Prot <- MixedModel_phenotype[MixedModel_phenotype$Assay == 'Proteomics' & MixedModel_phenotype$outcome == 'phenotypeDiseased: CHD2',]
+MixedModel_CORRECTED_CHD2_Prot <- MixedModel_CORRECTED_phenotype[MixedModel_CORRECTED_phenotype$Assay == 'Proteomics' & MixedModel_CORRECTED_phenotype$outcome == 'phenotypeDiseased: CHD2',]
+
+merged_df <-merge(MixedModel_CHD2_Prot, MixedModel_CORRECTED_CHD2_Prot, by = 'feature')
+
+cor_plot(merged_df$rank.x, merged_df$rank.y, x_lab = 'Uncorrected_pvalue', y_lab = 'Corrected_pvalue', title = 'CHD2')
+```
+```{r}
+MixedModel_NANS_Prot <- MixedModel_phenotype[MixedModel_phenotype$Assay == 'Proteomics' & MixedModel_phenotype$outcome == 'phenotypeDiseased: NANS-CDG',]
+MixedModel_CORRECTED_NANS_Prot <- MixedModel_CORRECTED_phenotype[MixedModel_CORRECTED_phenotype$Assay == 'Proteomics' & MixedModel_CORRECTED_phenotype$outcome == 'phenotypeDiseased: NANS-CDG',]
+
+merged_df <-merge(MixedModel_NANS_Prot, MixedModel_CORRECTED_NANS_Prot, by = 'feature')
+
+cor_plot(merged_df$rank.x, merged_df$rank.y, x_lab = 'Uncorrected_pvalue', y_lab = 'Corrected_pvalue', title = 'NANS-CDG')
+```
+
+## Compare BIC/AIC of Corrected and Uncorrected data (Only for phenotype col)
+```{r}
+MixedModel_Prot <- read.csv('BIC_AIC_UNCORRECTED/Model_phenotype_Proteomics.csv', row.names=1)
+MixedModel_Prot_CORRECTED <- read.csv('BIC_AIC_CORRECTED/Model_phenotype_Proteomics.csv', row.names=1)
+
+MixedModel_MTBL_RUMC <- read.csv('BIC_AIC_UNCORRECTED/Model_phenotype_Metabolomics_TML.csv', row.names=1)
+MixedModel_MTBL_RUMC_CORRECTED <- read.csv('BIC_AIC_CORRECTED/Model_phenotype_Metabolomics_TML.csv', row.names=1)
+
+MixedModel_MTBL_LUMC <- read.csv('BIC_AIC_UNCORRECTED/Model_phenotype_Metabolomics_LUMC__total_area_normalized.csv', row.names=1)
+MixedModel_MTBL_LUMC_CORRECTED <- read.csv('BIC_AIC_CORRECTED/Model_phenotype_Metabolomics_LUMC__total_area_normalized.csv', row.names=1)
+
+MixedModel_LipT <- read.csv('BIC_AIC_UNCORRECTED/Model_phenotype_Lipidomics_Targeted__imputed__log.csv', row.names=1)
+MixedModel_LipT_CORRECTED <- read.csv('BIC_AIC_CORRECTED/Model_phenotype_Lipidomics_Targeted__imputed__log.csv', row.names=1)
+
+MixedModel_LipUnt <- read.csv('BIC_AIC_UNCORRECTED/Model_phenotype_Lipidomics_Untargeted.csv', row.names=1)
+MixedModel_LipUnt_CORRECTED <- read.csv('BIC_AIC_CORRECTED/Model_phenotype_Lipidomics_Untargeted.csv', row.names=1)
+
+MixedModel_RNA <- read.csv('BIC_AIC_UNCORRECTED/Model_phenotype_RNAseq__RTC.csv', row.names=1)
+MixedModel_RNA_CORRECTED <- read.csv('BIC_AIC_CORRECTED/Model_phenotype_RNAseq__RTC.csv', row.names=1)
+
+
+
+cor_plot_AIC_BIC <- function(uncor_data, cor_data, col1, col2, pheno, title) {
+  cor_data <- cor_data[cor_data$outcome == pheno,]
+  uncor_data <- uncor_data[uncor_data$outcome == pheno,]
+  merged_df <-merge(cor_data, uncor_data, by = 'feature')
+  plt <- cor_plot(merged_df[, col1], merged_df[, col2], x_lab = 'Uncorrected data AIC', y_lab = 'Corrected data AIC', title = paste0(title, "\n", pheno))
+  return(plt)
+} 
+
+
+cor_plot_AIC_BIC(MixedModel_Prot, MixedModel_Prot_CORRECTED, 'AIC.x', 'AIC.y', 'phenotypeDiseased: CHD2', title = 'Proteomics')
+cor_plot_AIC_BIC(MixedModel_MTBL_RUMC, MixedModel_MTBL_RUMC_CORRECTED, 'AIC.x', 'AIC.y', 'phenotypeDiseased: CHD2', title ='Metabolomics RUMC')
+cor_plot_AIC_BIC(MixedModel_MTBL_LUMC, MixedModel_MTBL_LUMC_CORRECTED, 'AIC.x', 'AIC.y', 'phenotypeDiseased: CHD2', title ='Metabolomics LUMC')
+cor_plot_AIC_BIC(MixedModel_LipT, MixedModel_LipT_CORRECTED, 'AIC.x', 'AIC.y', 'phenotypeDiseased: CHD2', title ='Lipidomics Targeted')
+cor_plot_AIC_BIC(MixedModel_LipUnt, MixedModel_LipUnt_CORRECTED, 'AIC.x', 'AIC.y', 'phenotypeDiseased: CHD2', title ='Lipidomics Untargeted')
+cor_plot_AIC_BIC(MixedModel_RNA, MixedModel_RNA_CORRECTED, 'AIC.x', 'AIC.y', 'phenotypeDiseased: CHD2', title ='RNAseq')
+```
+
+Same plots with BIC
+
+```{r}
+cor_plot_AIC_BIC(MixedModel_Prot, MixedModel_Prot_CORRECTED, 'BIC.x', 'BIC.y', 'phenotypeDiseased: CHD2', title = 'Proteomics')
+cor_plot_AIC_BIC(MixedModel_MTBL_RUMC, MixedModel_MTBL_RUMC_CORRECTED, 'BIC.x', 'BIC.y', 'phenotypeDiseased: CHD2', title ='Metabolomics RUMC')
+cor_plot_AIC_BIC(MixedModel_MTBL_LUMC, MixedModel_MTBL_LUMC_CORRECTED, 'BIC.x', 'BIC.y', 'phenotypeDiseased: CHD2', title ='Metabolomics LUMC')
+cor_plot_AIC_BIC(MixedModel_LipT, MixedModel_LipT_CORRECTED, 'BIC.x', 'BIC.y', 'phenotypeDiseased: CHD2', title ='Lipidomics Targeted')
+cor_plot_AIC_BIC(MixedModel_LipUnt, MixedModel_LipUnt_CORRECTED, 'BIC.x', 'BIC.y', 'phenotypeDiseased: CHD2', title ='Lipidomics Untargeted')
+cor_plot_AIC_BIC(MixedModel_RNA, MixedModel_RNA_CORRECTED, 'BIC.x', 'BIC.y', 'phenotypeDiseased: CHD2', title ='RNAseq')
+```
+
+Check top metabolites in corrected data that are not significant in uncorrected data
+```{r}
+MixedModel_CHD2_MTBL_RUMC <- MixedModel_phenotype[MixedModel_phenotype$Assay == 'Metabolomics, TML' & MixedModel_phenotype$outcome == 'phenotypeDiseased: CHD2',]
+MixedModel_CORRECTED_CHD2_MTBL_RUMC <- MixedModel_CORRECTED_phenotype[MixedModel_CORRECTED_phenotype$Assay == 'Metabolomics, TML' & MixedModel_CORRECTED_phenotype$outcome == 'phenotypeDiseased: CHD2',]
+
+merged_df <-merge(MixedModel_CHD2_MTBL_RUMC, MixedModel_CORRECTED_CHD2_MTBL_RUMC, by = 'feature')
+merged_df <- merged_df[merged_df$p.adj.y < 0.05,]
+
+cor_plot(merged_df$coefficient.x, merged_df$coefficient.y, x_lab = 'Uncorrected_Coeff', y_lab = 'Corrected_Coeff', title = 'CHD2 Metabolomics coefficients')
+```
+
+
+# Session information
+```{r}
+sessionInfo()
+```

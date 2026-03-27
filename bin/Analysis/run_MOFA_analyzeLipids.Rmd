@@ -1,0 +1,558 @@
+---
+title: 'Multi-omics Factor Analysis (MOFA)'
+author:
+- Casper de Visser^[Radboud university medical center, casper.devisser@radboudumc.nl]
+output:
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  outdir: Z:/data/iPSC_data/results/MOFA
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  mofa_model: Z:/data/iPSC_data/results/MOFA/All_samples/model_ALL_SAMPLES_Prot_Glob_Min.hdf5
+  mofa_scores: Z:/data/iPSC_data/Results/MOFA/All_Samples/SampleScores.csv
+  lipid_class_data: Z:/data/iPSC_data/iPSC_MAE/lipidomics_T_Class_data.csv
+  config_file: 'config.yml'
+---
+
+This notebook performs Multi-omics Factor Analysis (MOFA) [@Argelaguet2018,@Argelaguet2020] on preprocessed data. 
+
+MOFA is an unsupervised method that uncovers main sources of variation in multi-omics data. It allows to identify variation shared across omics data types or specific to individual omics data types. 
+Subsequent to MOFA, correlation between MOFA factors and phenotypic information is determined to identify possible biological factors contributing to the observed variation.
+
+
+```{r show_parameters}
+print(params)
+dir.create(params$outdir)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!exists(outdir)){
+    outdir <- getwd()
+}
+```
+
+
+## Libraries
+```{r}
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(ggplot2)
+library(MOFA2)
+library(data.table)
+library(glue)
+```
+
+
+## Read input data
+
+Input data is a MultiAssayExperiment (MAE) object. All or specified assays in the MAE will be used for analysis Multi-omics Factor Analysis (MOFA).
+
+```{r read_input_data, message=FALSE}
+suppressMessages(library(MultiAssayExperiment))
+suppressMessages(library(HDF5Array))
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+
+```
+
+
+Omics to be included in MOFA
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+## Assay selection
+```{r}
+assay_names <- config$experiment_names$general_selection
+names(assay_names) <- assay_names
+assay_names
+```
+
+
+## Prepare phenotype data
+```{r}
+phenotype_data <- as.data.frame(colData(mae)) %>%
+  tibble::rownames_to_column("sample") %>%
+  mutate(
+    Disease = if_else(startsWith(phenotype, "Diseas"), "Disease", "Healthy"),
+    phenotype_CHD2_CRISPR = recode(
+      phenotype,
+      'Diseased: CHD2 CRISPR' = 'Diseased: CHD2'
+    ),
+    phenotype_CRISPRS_both = recode(
+      phenotype_CHD2_CRISPR,
+      'Rescue: repeat excised CRISPR DM1' = 'Healthy'
+  )
+  ) %>%
+  mutate(across(where(is.character), as.factor))
+```
+
+
+## Multi-omics factor analysis (MOFA)
+
+For running MOFA, it is recommended to first remove known batch effects. 
+Make sure to use input data that were adjusted for batch effect if necessary.
+
+Include shorter readable omics names
+```{r}
+shoter_names <- config$experiment_names$shorter_names
+```
+
+Prepare MOFA input data: create a long data frame with sample, feature, view, 
+[group], and value. 
+```{r prepare_mofa_input}
+# Function files
+required_files <- c(
+  "MOFA_functions.R",
+  "LipidClassFunctions.R",
+  "Feature_plots.R"
+)
+
+# possible directories
+possible_dirs <- c(
+  "support_functions", # when running in Nextflow
+  "../support_functions" # when running in Rstudio
+)
+
+# Source each required file from the first location where it exists
+for (file in required_files) {
+  found <- FALSE
+  for (dir in possible_dirs) {
+    path <- file.path(dir, file)
+    if (file.exists(path)) {
+      source(path)
+      message("Sourced: ", path)
+      found <- TRUE
+      break  # Move to next file once found
+    }
+  }
+  if (!found) {
+    warning("Could not find: ", file)
+  }
+}
+```
+
+Omics to data to correct input format
+```{r}
+mofa_input <- mae_to_MOFAinput(mae)
+mofa_input$value <- as.numeric(mofa_input$value)
+```
+
+Create the MOFA object
+```{r create_mofa_object}
+MOFAobject <- create_mofa(mofa_input)
+```
+
+
+## Read in MOFA model
+```{r}
+MOFAobject.trained <- MOFA2::load_model(params$mofa_model)
+```
+
+
+## Visualizations of MOFA results 
+
+## Plot amount of variance explained by each factor per modality
+
+```{r, fig.width=10, fig.height=5}
+expl_var <- c(
+  get_variance_explained(MOFAobject.trained)$r2_per_factor$single_group)
+
+ggp <- plot_variance_explained(MOFAobject.trained) +
+  geom_text(
+    label = round(expl_var, 2),
+    color = ifelse(expl_var < 0.6*max(expl_var), "black", "white")) +
+  theme(
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)
+  )
+      
+ggp
+```
+
+
+## Factor weights
+
+Lipidomics features can be grouped in lipid classes. And the features within a class (species) have different chain lengths and number of double bonds.
+```{r}
+lipidomics_feature_metadata <- as.data.frame(rowData(mae[["Lipidomics, Targeted | imputed | log"]]))
+table(lipidomics_feature_metadata$Class)
+```
+
+Each Lipid Class has different nomenclature for structural properties
+```{r}
+lipidomics_feature_metadata[!duplicated(lipidomics_feature_metadata$Class), c("Feature", "Class")]
+```
+
+
+### Color lipidomics feature weights per class
+
+```{r, fig.width=7}
+p <- plot_feature_weights(
+  MOFAobject.trained,
+  "Lipidomics_Targeted",
+  1,
+  lipidomics_feature_metadata,
+  color_col = "Class", 
+  top_n = 20, 
+  dot_size = 3
+)
+p
+ggsave(file.path(outdir, 'Lipid_F1_top_loadings_Class.pdf'), p)
+```
+
+
+
+```{r, fig.width=7}
+p <- plot_feature_weights(
+  MOFAobject.trained,
+  view = "Lipidomics_Targeted",
+  factor = 2,
+  feature_metadata = lipidomics_feature_metadata,
+  color_col = "Class", 
+  top_n = 20,
+  dot_size = 3
+)
+
+p 
+ggsave(file.path(outdir, 'Lipid_F2_top_loadings_Class.pdf'), p)
+```
+
+### Gene set enrichment style analysis to test overrepresentation of lipid classes
+```{r}
+lipid_sets <- split(lipidomics_feature_metadata$Feature, lipidomics_feature_metadata$Class)
+lipid_sets[1:3]
+```
+
+
+### Lipidomics weights and chain length
+```{r}
+## 'Groups' of lipid classes with the same nomenclature
+SingleChains <- c("CE", "PA", "FA", "LPC", "LPE")
+TwoChains <- c("PC", "PE", "PS", "PI", "PG")
+Sphingolipids <- c("Cer", "HexCER", "LacCER", "SM")
+Glyercols <- c("TG", "DG")
+
+SingleChains_df <- lipidomics_feature_metadata[lipidomics_feature_metadata$Class %in% SingleChains,]
+TwoChains_df <- lipidomics_feature_metadata[lipidomics_feature_metadata$Class %in% TwoChains,]
+Sphingolipids_df <- lipidomics_feature_metadata[lipidomics_feature_metadata$Class %in% Sphingolipids,]
+Glycerols_df <- lipidomics_feature_metadata[lipidomics_feature_metadata$Class %in% Glyercols,]
+
+SingleChains_df <- parse_single_chain_df(SingleChains_df)
+TwoChains_df <- pparse_two_chain_df(TwoChains_df)
+Sphingolipids_df <- parse_sphingo_df(Sphingolipids_df)
+Glycerols_df <- parse_glycerolipid_df(Glycerols_df)
+
+lipidomics_feature_metadata <- rbind(SingleChains_df, TwoChains_df, Sphingolipids_df, Glycerols_df)
+```
+
+
+## Add lipid structural properties to MOFA weights
+```{r}
+MOFA_weights <- get_weights(MOFAobject.trained)
+names(MOFA_weights) <- assay_names
+
+lipid_weights <- as.data.frame(MOFA_weights$`Lipidomics, Targeted | imputed | log`)
+
+lipid_weights <- cbind(lipid_weights, lipidomics_feature_metadata[rownames(lipid_weights),])
+```
+
+
+## Combined plot
+```{r}
+correlation_plot_all_groups(lipid_weights, 
+                            target_column = 'Factor1',
+                            filter_column = 'Class', 
+                            fixed_column = 'Total_Carbons')
+```
+## Combined plot double bonds
+```{r}
+correlation_plot_all_groups(lipid_weights, 
+                            target_column = 'Factor1',
+                            filter_column = 'Class', 
+                            fixed_column = 'Total_DBs')
+```
+
+
+## Combined plot for Factor 2
+```{r}
+correlation_plot_all_groups(lipid_weights, 
+                            target_column = 'Factor2',
+                            filter_column = 'Class', 
+                            fixed_column = 'Total_Carbons')
+```
+
+## Combined plot double bonds
+```{r}
+correlation_plot_all_groups(lipid_weights, 
+                            target_column = 'Factor2',
+                            filter_column = 'Class', 
+                            fixed_column = 'Total_DBs')
+```
+
+
+
+
+## Factor 3
+Combined plot
+```{r}
+correlation_plot_all_groups(lipid_weights, 
+                            target_column = 'Factor3',
+                            filter_column = 'Class', 
+                            fixed_column = 'Total_Carbons')
+```
+
+## Combined plot
+```{r}
+correlation_plot_all_groups(lipid_weights, 
+                            target_column = 'Factor4',
+                            filter_column = 'Class', 
+                            fixed_column = 'Total_Carbons')
+```
+
+
+## One-chain lipids
+
+### CE
+```{r}
+lipid_class <- 'CE'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+### PA
+```{r}
+lipid_class <- 'PA'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+### FA
+```{r}
+lipid_class <- 'FA'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+### LPC
+```{r}
+lipid_class <- 'LPC'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+### LPE
+```{r}
+lipid_class <- 'LPE'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+
+## Two-chain lipids
+
+### PC
+```{r}
+lipid_class <- 'PC'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+### PE
+```{r}
+lipid_class <- 'PE'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+### PS
+```{r}
+lipid_class <- 'PS'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+### PG
+```{r}
+lipid_class <- 'PG'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+### PI
+```{r}
+lipid_class <- 'PI'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+
+
+## Sphingolipids
+
+### Cer
+```{r}
+lipid_class <- 'Cer'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+### SM
+```{r}
+lipid_class <- 'SM'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+### HexCER
+```{r}
+lipid_class <- 'HexCER'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+### LacCER
+```{r}
+lipid_class <- 'LacCER'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+
+## Glyerols
+## TriGlycerides (TG)
+```{r}
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = 'TG', lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = 'TG', lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = 'TG', lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = 'TG', lipid_property = "Total_Carbons", method='spearman')
+```
+TG double bonds
+```{r}
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = 'TG', lipid_property = "Total_DBs", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = 'TG', lipid_property = "Total_DBs", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = 'TG', lipid_property = "Total_DBs", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = 'TG', lipid_property = "Total_DBs", method='spearman')
+```
+
+
+## DiGlycerides (DG)
+```{r}
+lipid_class <- 'DG'
+
+correlation_plot(lipid_weights, target_column = 'Factor1', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor2', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor3', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+correlation_plot(lipid_weights, target_column = 'Factor4', filter_value = lipid_class, lipid_property = "Total_Carbons", method='spearman')
+```
+
+
+## Lipid Class total values correlation with MOFA scores
+```{r}
+MOFA_scores <- read.csv(params$mofa_scores, row.names=1)
+LipidClassData <- read.csv(params$lipid_class_data, row.names=1)
+
+LipidClassData <- data.frame(t(LipidClassData))
+
+# Add Class info to mofa scores 
+MOFA_scores <- MOFA_scores[rownames(LipidClassData),]
+MOFA_scoresLipidClass <- cbind(MOFA_scores, LipidClassData)
+```
+
+
+```{r}
+ClassVector <- as.numeric(MOFA_scoresLipidClass$PE)
+ClassName <- "PE"
+
+cor_plot(MOFA_scoresLipidClass$Factor1, y=ClassVector, x_lab = "Factor 1", y_lab=ClassName)
+cor_plot(MOFA_scoresLipidClass$Factor2, y=ClassVector, x_lab = "Factor 2", y_lab=ClassName)
+cor_plot(MOFA_scoresLipidClass$Factor3, y=ClassVector, x_lab = "Factor 3", y_lab=ClassName)
+cor_plot(MOFA_scoresLipidClass$Factor4, y=ClassVector, x_lab = "Factor 4", y_lab=ClassName)
+```
+
+```{r}
+ClassVector <- as.numeric(MOFA_scoresLipidClass$HexCER)
+ClassName <- "HexCER"
+
+cor_plot(x = MOFA_scoresLipidClass$Factor1, y = ClassVector, x_lab = "Factor1", y_lab = ClassName)
+cor_plot(x = MOFA_scoresLipidClass$Factor2, y = ClassVector, x_lab = "Factor2", y_lab = ClassName)
+cor_plot(x = MOFA_scoresLipidClass$Factor3, y = ClassVector, x_lab = "Factor3", y_lab = ClassName)
+cor_plot(x = MOFA_scoresLipidClass$Factor4, y = ClassVector, x_lab = "Factor4", y_lab = ClassName)
+```
+
+
+```{r}
+ClassVector <- as.numeric(MOFA_scoresLipidClass$SM)
+ClassName <- "SM"
+
+cor_plot(x = MOFA_scoresLipidClass$Factor1, y = ClassVector, x_lab = "Factor1", y_lab = ClassName)
+cor_plot(x = MOFA_scoresLipidClass$Factor2, y = ClassVector, x_lab = "Factor2", y_lab = ClassName)
+cor_plot(x = MOFA_scoresLipidClass$Factor3, y = ClassVector, x_lab = "Factor3", y_lab = ClassName)
+cor_plot(x = MOFA_scoresLipidClass$Factor4, y = ClassVector, x_lab = "Factor4", y_lab = ClassName)
+```
+
+
+```{r}
+ClassVector <- as.numeric(MOFA_scoresLipidClass$TG)
+ClassName <- "TG"
+
+cor_plot(x = MOFA_scoresLipidClass$Factor1, y = ClassVector, x_lab = "Factor1", y_lab = ClassName)
+cor_plot(x = MOFA_scoresLipidClass$Factor2, y = ClassVector, x_lab = "Factor2", y_lab = ClassName)
+cor_plot(x = MOFA_scoresLipidClass$Factor3, y = ClassVector, x_lab = "Factor3", y_lab = ClassName)
+cor_plot(x = MOFA_scoresLipidClass$Factor4, y = ClassVector, x_lab = "Factor4", y_lab = ClassName)
+```
+
+
+
+```{r}
+sessionInfo()
+```
+

@@ -1,0 +1,290 @@
+---
+title: 'Linear Mixed models'
+author:
+  - Casper de Visser^[Radboud university medical center, Casper.deVisser@radboudumc.nl]
+output:
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  mofa_scores: Z:/data/iPSC_data/Results/MOFA/All_Samples/SampleScores.csv
+  outdir: Z:/data/iPSC_data/results/RLM/
+  config_file: "config.yml"
+---
+
+## Libraries
+```{r}
+library(lme4)
+```
+
+
+## Params
+The `MultiAssayExperiment` [@Ramos2017] contains preprocessed data and has been created with the *R* notebook `examples\create_MultiAssayExperiment.Rmd`.
+
+```{r read_multiassayexperiment}
+print(params)
+outdir <- params$outdir
+```
+
+## Read data and metadata: MultiAssayExperiment
+
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+#mae
+```
+
+
+The MultiAssayExperiment contains individual omics assays
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+
+## Assay selection
+```{r}
+experiment_names <- config$experiment_names$general_selection
+```
+
+
+Phenotype information shared across all assays can be accessed via `colData()`
+
+```{r sample_information_overview}
+names(colData(mae))
+
+pheno_df <- as.data.frame(colData(mae))
+
+## Add column for Disease vs Healthy comparison
+new_column <- lapply(pheno_df$phenotype, function(x) {
+    if (startsWith(x, 'Diseas')) {
+        value <- 'Disease'
+    }
+    else{
+        value <- 'Healthy'
+    }
+})
+pheno_df$Disease <- as.character(new_column)
+```
+
+
+## Correct omics values with MOFA factor 2 scores
+```{r}
+mofa_scores_df <- read.csv(params$mofa_scores, row.names = 1)
+```
+
+
+## Load functions for Nested Mixed Effect model
+```{r, warning=FALSE, message=FALSE}
+source('Mixed_Model_functions.R')
+```
+
+
+```{r}
+experiment_names
+```
+
+
+
+Compare Corrected and non-corrected for single feature
+```{r}
+assay_name <- 'Proteomics'
+confound_factors <- c("Factor1", "Factor2")
+ # 1. Prepare data
+data_prep <- prepare_feature_data(assay_name, mae)
+df <- data_prep$df
+features <- data_prep$features
+  
+# 2. Add confounding factors
+df <- add_confounding_factors(df, mofa_scores_df, confound_factors)
+  
+# 3. Regress out confounding factors
+df_corrected <- regress_out_factors(df, features, confound_factors)
+  
+# 4. Prepare final modeling dataframe
+df_input_cor <- prepare_modeling_data(df_corrected, df, pheno_df, DM1_ONLY=F)
+df_input <- prepare_modeling_data(df, df, pheno_df, DM1_ONLY=F)
+  
+# 5. Run models and save
+featueres_check <- c('Q9Y3U8')
+model_result <- run_models_and_save(df_input, features= featueres_check, 'phenotype', assay_name)
+model_result_cor <- run_models_and_save(df_input_cor, features= featueres_check, 'phenotype', assay_name)
+```
+RPL336 associates with Factor 1
+```{r}
+col <- 'Q9Y3U8'
+factor_columns <- c("Factor1", "Factor2")
+formula_str <- paste(col, "~", paste(factor_columns, collapse = " + "))
+model <- lm(as.formula(formula_str), data = df)
+plot(model)
+summary(model)
+```
+NEUROG2 associates with Factor 2
+```{r}
+col <- 'Q9H2A3'
+factor_columns <- c("Factor1", "Factor2")
+formula_str <- paste(col, "~", paste(factor_columns, collapse = " + "))
+model <- lm(as.formula(formula_str), data = df)
+plot(model)
+summary(model)
+```
+
+
+## Run model on few features, to check diagnostics
+Proteomics
+```{r}
+assay_name <- 'Proteomics'
+data_prep <- prepare_feature_data(assay_name, mae)
+df <- data_prep$df
+df <- prepare_modeling_data(df, df, pheno_df)
+feature <- data_prep$features[1]
+predictor = 'Disease'
+
+df$y <- df[[feature]]
+str_formula <- paste0("y ~ ", predictor, " +  (1 | sample.renames/clone_ids)")
+my_formula <- as.formula(str_formula)
+lm_fit <- try(lmerTest::lmer(formula = my_formula, data=df))
+
+simulated_residuals <- DHARMa::simulateResiduals(lm_fit)
+plot(simulated_residuals)
+```
+
+
+
+
+EMseq
+```{r}
+#assay_name <- experiment_names[c(1)]
+assay_name <- 'EMseq | 100,000 variable Mval'
+data_prep <- prepare_feature_data(assay_name, mae)
+df <- data_prep$df
+df <- prepare_modeling_data(df, df, pheno_df)
+feature <- data_prep$features[3]
+predictor = 'phenotype'
+
+df$y <- df[[feature]]
+## Apply tranformation, to remove 0 and 1 values for beta distribution
+#df$y <- pmax(pmin(df$y, 1 - 1e-6), 1e-6)
+
+
+str_formula <- paste0("y ~ ", predictor, " +  (1 | sample.renames/clone_ids)")
+my_formula <- as.formula(str_formula)
+
+#lm_fit <- try(lmerTest::lmer(formula = my_formula, data=df))
+library(glmmTMB)
+lm_fit <- try(glmmTMB::glmmTMB(formula = my_formula, family = t_family(link = "identity"), data=df))
+#library(robustlmm)
+#lm_fit <- try(rlmer(formula = my_formula,  data=df))
+library(flexmix)
+lm_fit <- try(flexmix(formula = my_formula,  data=df))
+
+
+simulated_residuals <- DHARMa::simulateResiduals(lm_fit)
+plot(simulated_residuals)
+```
+
+Lipidomics T
+```{r}
+assay_name <- experiment_names[[2]]
+data_prep <- prepare_feature_data(assay_name, mae)
+df <- data_prep$df
+df <- prepare_modeling_data(df, df, pheno_df)
+feature <- data_prep$features[1]
+predictor = 'Disease'
+
+df$y <- df[[feature]]
+str_formula <- paste0("y ~ ", predictor, " +  (1 | sample.renames/clone_ids)")
+my_formula <- as.formula(str_formula)
+lm_fit <- try(lmerTest::lmer(formula = my_formula, data=df))
+
+simulated_residuals <- DHARMa::simulateResiduals(lm_fit)
+plot(simulated_residuals)
+```
+
+Lipitomics Unt
+```{r}
+assay_name <- experiment_names[[3]]
+data_prep <- prepare_feature_data(assay_name, mae)
+df <- data_prep$df
+df <- prepare_modeling_data(df, df, pheno_df)
+feature <- data_prep$features[1]
+predictor = 'Disease'
+
+df$y <- df[[feature]]
+str_formula <- paste0("y ~ ", predictor, " +  (1 | sample.renames/clone_ids)")
+my_formula <- as.formula(str_formula)
+lm_fit <- try(lmerTest::lmer(formula = my_formula, data=df))
+
+simulated_residuals <- DHARMa::simulateResiduals(lm_fit)
+plot(simulated_residuals)
+```
+
+Metabolomics LUMC
+```{r}
+assay_name <- experiment_names[[4]]
+data_prep <- prepare_feature_data(assay_name, mae)
+df <- data_prep$df
+df <- prepare_modeling_data(df, df, pheno_df)
+feature <- data_prep$features[1]
+predictor = 'Disease'
+
+df$y <- df[[feature]]
+str_formula <- paste0("y ~ ", predictor, " +  (1 | sample.renames/clone_ids)")
+my_formula <- as.formula(str_formula)
+lm_fit <- try(lmerTest::lmer(formula = my_formula, data=df))
+
+simulated_residuals <- DHARMa::simulateResiduals(lm_fit)
+plot(simulated_residuals)
+```
+
+Metabolomics TML
+```{r}
+assay_name <- experiment_names[[5]]
+data_prep <- prepare_feature_data(assay_name, mae)
+df <- data_prep$df
+df <- prepare_modeling_data(df, df, pheno_df)
+feature <- data_prep$features[1]
+predictor = 'Disease'
+
+df$y <- df[[feature]]
+str_formula <- paste0("y ~ ", predictor, " +  (1 | sample.renames/clone_ids)")
+my_formula <- as.formula(str_formula)
+lm_fit <- try(lmerTest::lmer(formula = my_formula, data=df))
+
+simulated_residuals <- DHARMa::simulateResiduals(lm_fit)
+plot(simulated_residuals)
+```
+
+
+RNAseq
+```{r}
+assay_name <- experiment_names[[7]]
+data_prep <- prepare_feature_data(assay_name, mae)
+df <- data_prep$df
+df <- prepare_modeling_data(df, df, pheno_df)
+feature <- data_prep$features[1]
+predictor = 'Disease'
+
+df$y <- df[[feature]]
+str_formula <- paste0("y ~ ", predictor, " +  (1 | sample.renames/clone_ids)")
+my_formula <- as.formula(str_formula)
+lm_fit <- try(lmerTest::lmer(formula = my_formula, data=df))
+
+simulated_residuals <- DHARMa::simulateResiduals(lm_fit)
+plot(simulated_residuals)
+```
+
+## Session information
+
+```{r}
+sessionInfo()
+```
+
+

@@ -1,0 +1,146 @@
+---
+title: 'Linear models'
+author:
+  - Casper de Visser^[Radboud university medical center, Casper.deVisser@radboudumc.nl]
+output:
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  outdir: Z:/data/iPSC_data/results/RLM/
+  config_file: "config.yml"
+---
+
+## Params
+The `MultiAssayExperiment` [@Ramos2017] contains preprocessed data and has been created with the *R* notebook `examples\create_MultiAssayExperiment.Rmd`.
+
+```{r read_multiassayexperiment}
+print(params)
+outdir <- params$outdir
+```
+
+## Read data and metadata: MultiAssayExperiment
+
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+mae
+```
+
+The MultiAssayExperiment contains individual omics assays
+
+
+## Config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+```
+
+## Assay selection
+```{r}
+experiment_names <- config$experiment_names$general_selection
+```
+
+Phenotype information shared across all assays can be accessed via `colData()`
+```{r sample_information_overview}
+names(colData(mae))
+
+pheno_df <- as.data.frame(colData(mae))
+
+## Add column for Disease vs Healthy comparison
+new_column <- lapply(pheno_df$phenotype, function(x) {
+    if (startsWith(x, 'Diseas')) {
+        value <- 'Disease'
+    }
+    else{
+        value <- 'Healthy'
+    }
+})
+pheno_df$Disease <- as.character(new_column)
+```
+
+
+## Load functions for Nested Mixed Effect model
+```{r, warning=FALSE, message=FALSE}
+source('Mixed_Model_functions.R')
+```
+
+
+## Omics layers
+```{r}
+experiment_names
+```
+
+## Adapted function for running linear model
+```{r}
+run_rand_model_chd2 <- function(assay_name, pred, chd2_patient, nest_effect=FALSE) {
+  se <- experiments(mae)[assay_name]
+  df <- get_df_input_lm(se)
+  features <- colnames(df)
+  features <- features[features != "ENSG00000129824"] #TODO
+  # add biological variables to data frame
+  df <- cbind(df, pheno_df[rownames(df), ])
+  df <- add_nested_cols(df)
+  df <- code_phenotype_column(df)
+  # select CHD2 patient
+  df <- df[df$observation.unit.identifier.crispr %in% c('CTRL_409B',
+                                                        'CTRL_WTC', 
+                                                        'CTRL_Sendai', 
+                                                        chd2_patient),]
+  ## Remove features that are with only missing values
+  df <- df[,colSums(!is.na(df)) > 0]
+  df <- df[, sapply(df, function(x) length(unique(na.omit(x))) > 1)]
+  features <- features[features %in% colnames(df)]
+  # fit linear mixed model
+  model_result <- do.call(rbind, lapply(
+    features,
+    run_MixedModel_df,
+    df=df,
+    predictor=pred,
+    nest_effect=nest_effect))
+  #adjust p-values
+  model_result$p.adj <- p.adjust(model_result$p.value, method = "BH")
+  model_result$rank <- rank(model_result$p.value)
+  
+  ## Save model to .csv
+  assay_name <- paste0(assay_name)
+  assay_name <- gsub(" ", "_", assay_name)
+  assay_name <- gsub("\\|", "", assay_name)
+  assay_name <- gsub(",", "", assay_name)
+  
+  ## file out path
+  outfile <- paste0("Model_", pred, "_", chd2_patient, "_", assay_name, ".csv")
+  write.csv(model_result, outfile)
+  
+  return(model_result)
+}
+```
+
+
+## Run Mixed Effect model, comparing individual disease groups with the control lines
+```{r}
+# Select assays
+assay_names <- experiment_names[c(2,3,4,5,6,7)]
+
+mae_rlm_RandomEffect <- lapply(
+     assay_names, run_rand_model_chd2, pred='phenotype', chd2_patient = 'CHD2_CRISPR')
+```
+
+
+## Volcano plot
+```{r}
+
+```
+
+
+## Session information
+```{r}
+sessionInfo()
+```
+
+

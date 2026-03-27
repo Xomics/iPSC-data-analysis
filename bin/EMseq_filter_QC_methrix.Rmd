@@ -1,0 +1,117 @@
+---
+title: "Methrix"
+output: html_document
+params:
+    methrix_dir: Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_raw/
+    methrix_qc_dir: Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_QC_SNP_filtered/
+---
+
+```{r}
+library(methrix)
+```
+
+
+```{r}
+print(params)
+```
+
+
+## Read in Methrix object from shared disk
+```{r}
+# you can only use the load_HDF5_methrix if you saved it as an HDF5 object. If not, you can simply save it as RDS, or similar and open with the same package. For a low number of samples (depending on your system, but <20, use in-memory object, as it is faster. )
+
+meth <- methrix::load_HDF5_methrix(params$methrix_dir, )
+```
+
+
+## Create Methrix report
+
+```{r}
+#methrix::methrix_report(meth=meth_object, output_dir = 'Z:/data/iPSC_data/Results/Methrix/')
+```
+
+
+## Remove uncovered loci
+
+```{r}
+meth <- methrix::remove_uncovered(m = meth)
+#to remove the sex chromosomes, if you want. 
+meth <- methrix::subset_methrix(meth, contigs = paste0("chr", 1:22))
+```
+
+## QC filtering 
+
+```{r}
+# this sets the values to missing for sites with low and too high coverage 
+
+meth <- methrix::mask_methrix(m = meth, low_count = 5)
+#this filters the sites which are not covered in s certain percentage of your study population - i.e. remove sites with are not covered in more than 20% or your samples
+meth <- methrix::coverage_filter(m=meth, cov_thr = 1, prop_samples = 0.2)
+
+
+```
+
+## Filter CpG overlappings with SNP
+
+```{r}
+library(MafDb.1Kgenomes.phase3.GRCh38)
+library(GenomicScores)
+meth <- methrix::remove_snps(m = meth)
+```
+
+```{r}
+meth
+```
+
+
+```{r}
+save_HDF5_methrix(meth, 'Z:/data/iPSC_data/iPSC_EMseq/Methrix/h5_QC_SNP_filtered/', replace=T)
+```
+
+
+# Work with QC and SNP filtered data
+```{r}
+meth <- methrix::load_HDF5_methrix(params$methrix_qc_dir)
+```
+
+
+## Beta-values, M-values
+```{r}
+# mpca <- methrix::methrix_pca(m= meth, top_var = 10000, n_pc = 20, do_plot = F)
+# methrix::plot_pca(mpca, m=meth, col_anno = "Group", shape_anno = "replicate")
+```
+
+
+## Subset 100,000 most variable CpG sites
+```{r}
+meth_ordered <- methrix::order_by_sd(meth)
+meth_subset <- meth_ordered[1:100000,]
+```
+
+## Subset 100,000 random CpG sites
+```{r}
+set.seed(16633)
+meth_rando_subset <- meth[sample(1:nrow(meth), 100000, replace = F),]
+```
+
+## Save subsets as RDS
+```{r}
+meth_subset <- convert_HDF5_methrix(meth_subset)
+saveRDS(meth_subset, 'Z:/data/iPSC_data/iPSC_MAE/meth_filt_sd.RDS')
+
+meth_rando_subset <- convert_HDF5_methrix(meth_rando_subset)
+saveRDS(meth_rando_subset, 'Z:/data/iPSC_data/iPSC_MAE/meth_filt_rand.RDS')
+```
+
+
+## M-values
+```{r}
+beta <- get_matrix(meth, add_loci = F)
+C <- get_matrix(meth, add_loci = F, type = "C")
+M <- beta*C
+U <- C-M
+M_val <- log2((M+0.001)/(U+0.001))
+rownames(M_val) <- paste0(meth@elementMetadata$chr, "_", meth@elementMetadata$start)
+saveRDS(M_val, 'Z:/data/iPSC_data/iPSC_MAE/meth_filt_sd_Mval.RDS')
+```
+

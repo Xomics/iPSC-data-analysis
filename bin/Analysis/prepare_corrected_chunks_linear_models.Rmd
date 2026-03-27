@@ -1,0 +1,147 @@
+---
+title: 'Prepare chunks to anallyze large omics data sets with mixed linear models'
+author:
+  - Casper de Visser^[Radboud university medical center, Casper.deVisser@radboudumc.nl]
+output:
+  html_document:
+    toc: true
+    df_print: paged
+params:
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+  config_file: config.yml
+  mofa_scores: Z:/data/iPSC_data/Results/MOFA/All_Samples/SampleScores.csv
+  outdir: Z:/data/iPSC_data/results/RLM/
+---
+
+## Params
+The `MultiAssayExperiment` [@Ramos2017] contains preprocessed data and has been created with the *R* notebook `examples\create_MultiAssayExperiment.Rmd`.
+
+```{r read_multiassayexperiment}
+print(params)
+outdir <- params$outdir
+
+# If outdir not exists set to current dir
+if (!dir.exists(outdir)){
+    outdir <- getwd()
+}
+```
+
+## Read data and metadata: MultiAssayExperiment
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+mae
+```
+
+
+## Select assay from config file
+```{r}
+config <- yaml::read_yaml(params$config_file)
+assay_name <- config$experiment_names$chunks_mixed_model
+```
+
+Technical variables are available per assay
+
+```{r}
+tech_vars_factor <- lapply(experiments(mae), function(x) {
+  num_levels <- apply(colData(x), 2, function(x) {length(levels(as.factor(x)))})
+  t <- names(colData(x))[num_levels <= 9 & num_levels > 1]
+  t <- t[t!="subject.id"]
+  t <- t[!t %in% names(colData(mae))]
+})
+tech_vars_factor
+
+tech_vars_continuous <- lapply(experiments(mae), function(x) {
+  num_levels <- apply(colData(x), 2, function(x) {length(levels(as.factor(x)))})
+  t <- names(colData(x))[num_levels > 9]
+  t <- t[t!="subject.id"]
+  t <- t[t!="measurement.id"]
+  t <- t[t!="measurement_names"]
+  t <- t[t!="ID.Patient"]
+  t <- t[!t %in% c("SampleID", "Radboud.code", "Kevin.nr", "Kevin.CPM", 
+                   "Sample.name", "ISA_name", "SampleID_withrep", "Sample_Overview_names")] #TODO, remove these from sample metadata sheet
+  t <- t[!t %in% c("GroupNum", "GroupName", "SampleNorm", "Radboud.code.1")] 
+
+  t <- t[!t %in% names(colData(mae))]
+})
+tech_vars_continuous
+```
+
+
+Phenotype information shared across all assays can be accessed via `colData()`
+
+```{r sample_information_overview}
+names(colData(mae))
+
+pheno_df <- as.data.frame(colData(mae))
+
+## Add column for Disease vs Healthy comparison
+new_column <- lapply(pheno_df$phenotype, function(x) {
+    if (startsWith(x, 'Diseas')) {
+        value <- 'Disease'
+    }
+    else{
+        value <- 'Healthy'
+    }
+})
+pheno_df$Disease <- as.character(new_column)
+```
+
+
+## Load functions for Nested Mixed Effect model
+```{r}
+source_paths <- c(
+  "../support_functions/Mixed_Model_functions.R",      # when running in Rstudio
+  "Mixed_Model_functions.R"                    # when running in Nextflow
+)
+
+for (path in source_paths) {
+  if (file.exists(path)) {
+    source(path)
+    break
+  }
+}
+```    
+
+
+## Correct omics values with MOFA factor 2 scores
+```{r}
+mofa_scores_df <- read.csv(params$mofa_scores, row.names = 1)
+```
+
+
+## Split data into chunks, add phenotypic columns and save to .csv files
+```{r}
+se <- experiments(mae)[assay_name]
+
+## Prepare data for splitting
+# Prepare data
+data_prep <- prepare_feature_data(assay_name, mae)
+df <- data_prep$df
+features <- data_prep$features
+
+# Correct for confounding factors (MOFA factor 1 and 2)
+confound_factors = c("Factor1", "Factor2") ## TODO
+df <- add_confounding_factors(df, mofa_scores_df, confound_factors)
+df_corrected <- regress_out_factors(df, features, confound_factors)
+
+chunks_df <- split_in_chunks(df, 100)
+
+lapply(1:length(chunks_df), function(x) {
+  chunk <- add_pheno_cols(chunks_df[[x]])
+  write.csv(chunk, paste0('Chunk_', x, '.csv'))
+})
+```
+
+
+## Session information
+```{r}
+sessionInfo()
+```
+
+

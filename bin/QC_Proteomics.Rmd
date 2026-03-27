@@ -1,0 +1,64 @@
+---
+title: "QC Proteomics"
+output: 
+  html_notebook:
+    toc: true
+    theme: united
+author: "Purva Kulkarni"
+email: "purva.kulkarni@radboudumc.nl"
+#Date:`r Sys.Date()`
+params:
+  proteomics_data_stats: Z:/data/iPSC_data/iPSC_proteomics/PTX471b_EATRIS_iPSC_DIA/_DIANN_results/DIA-MBR_iPSC_20231110_results.stats.tsv
+---
+
+# Introduction
+This notebook contains the QC report for the proteomics data.
+
+# Read data
+
+```{r}
+print(params)
+proteomics_data_stats <- read.delim(params$proteomics_data_stats)
+print(colnames(proteomics_data_stats))
+print(head(proteomics_data_stats[,1:7]))
+```
+# Quality control metrics
+
+## Total signal, median RT and median mass across samples
+Plot the total ion count observed for MS1 acquisition
+```{r fig.width=14}
+library(ggplot2)
+
+# Make plots wider
+#options(repr.plot.width = 20, repr.plot.height = 8)
+
+ggplot(proteomics_data_stats, aes(x = File.Name, y=MS1.Signal)) + geom_point() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+```
+Plot the total ion count observed for MS1 acquisition
+```{r fig.width=14}
+library(ggplot2)
+
+ggplot(proteomics_data_stats, aes(x = File.Name, y=MS2.Signal)) + geom_point() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) 
+```
+
+Plot the median RT predicted across samples
+```{r fig.width=14}
+library(ggplot2)
+
+ggplot(proteomics_data_stats, aes(x = File.Name, y=Median.RT.Prediction.Acc)) + geom_point() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) 
+```
+
+Plot the median MS1 mass across samples
+```{r fig.width=14}
+library(ggplot2)
+
+ggplot(proteomics_data_stats, aes(x = File.Name, y=Median.Mass.Acc.MS1.Corrected)) + geom_point() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) 
+```
+
+## Principal Component analysis
+```{r  fig.width=14}
+source("support_functions/performPCA.R")
+proteomics_data <- read.delim("Z:/data/iPSC_data/iPSC_proteomics/PTX471b_EATRIS_iPSC_DIA/_DIANN_results/DIA-MBR_iPSC_20231110_results.pg_matrix.tsv")
+performPCA(proteomics_data, "CDH2_hetWTC_Proteomics_1_S1_C12_1_13378", "NANS_p1c1_Proteomics_2_S2_A5_1_13436") 
+
+```

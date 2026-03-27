@@ -1,0 +1,246 @@
+---
+title: "RLM_plot_results"
+output: html_document
+date: "2024-11-15"
+params:
+  outdir: Z:/data/iPSC_data/results/RLM/
+  mae_hdf5_path: Z:/data/iPSC_data/iPSC_MAE/h5MAE
+---
+
+# Visualize results of linear modelling
+
+## Parameters
+
+```{r}
+print(params)
+outdir <- params$outdir
+```
+
+## Read data frames with RLM results
+
+```{r}
+mae_rlm_all_merged_phenotypes <- read.csv('RobustModels/rlm_all_phenotypes_merged_2025-01-20_22_55.csv', row.names=1)
+```
+
+## Add DNA Methylation data
+```{r}
+# mae_rlm_all_merged_phenotypes_Var <- read.csv('RobustModels/EMseq_VariableSet_Pheno.csv', row.names=1)
+# 
+# # Merge with other data frames
+# mae_rlm_all_merged_phenotypes <- rbind(mae_rlm_all_merged_phenotypes, mae_rlm_all_merged_phenotypes_Var)
+# 
+# rm(mae_rlm_all_merged_phenotypes_Var)
+```
+
+
+### Remove result with covariate
+```{r}
+RLM_noCov <- mae_rlm_all_merged_phenotypes[mae_rlm_all_merged_phenotypes$covariates != 'observation.unit.identifier',]
+```
+
+
+
+## Read in Mixed Models results
+```{r}
+MixedModel_mtblmcs_tml <- read.csv('MixedModels/Model_Metabolomics_TML.csv', row.names=1)
+MixedModel_prot <- read.csv('MixedModels/Model_Proteomics.csv', row.names=1)
+MixedModel_mtlmbcs_lumc <- read.csv('MixedModels/Model_Metabolomics_LUMC__total_area_normalized.csv', row.names=1)
+MixedModel_lip_unt <- read.csv('MixedModels/Model_Lipidomics_Untargeted__no_outlier.csv', row.names=1)
+MixedModel_lip_tar <- read.csv('MixedModels/Model_Lipidomics_Targeted__imputed__log.csv', row.names=1)
+MixedModel_RNAseq <- read.csv('MixedModels/Model_RNAseq.csv')
+MixedModel_RNAseq$X <- NULL
+MixedModel_RNAseq$p.adj <- p.adjust(MixedModel_RNAseq$p.value, method = "BH")
+
+## EMseq data (TODO: Add to Nextflow?)
+MixedModel_EMseq <- read.csv('MixedModels/Model_EMseq.csv')
+MixedModel_EMseq$X <- NULL
+MixedModel_EMseq$p.adj <- p.adjust(MixedModel_EMseq$p.value, method = "BH")
+```
+
+
+## Intersetion of the two metabolomics (TML) models
+```{r}
+rlm_mtblmcs_TML <- RLM_noCov[RLM_noCov$assay == "Metabolomics, TML", ] 
+
+cor(rlm_mtblmcs_TML$coefficient, MixedModel_mtblmcs_tml$coefficient)
+```
+
+
+```{r}
+plot(rlm_mtblmcs_TML$coefficient, MixedModel_mtblmcs_tml$coefficient)
+```
+
+## Intersection of significants
+```{r}
+MixedModel_mtblmcs_TML_signif <- MixedModel_mtblmcs_tml[MixedModel_mtblmcs_tml$p.adj < 0.05,]
+rlm_mtblmcs_TML_signif <- rlm_mtblmcs_TML[rlm_mtblmcs_TML$p.adj < 0.05,]
+
+MixedModel_mtblmcs_TML_signif$model_outcome <- paste0(MixedModel_mtblmcs_TML_signif$feature, MixedModel_mtblmcs_TML_signif$outcome)
+rlm_mtblmcs_TML_signif$model_outcome <- paste0(rlm_mtblmcs_TML_signif$feature, rlm_mtblmcs_TML_signif$outcome)
+
+intersection_signif <- rlm_mtblmcs_TML_signif[rlm_mtblmcs_TML_signif$model_outcome %in% MixedModel_mtblmcs_TML_signif$model_outcome,]
+
+library(VennDiagram)
+
+grid.newpage()
+
+draw.pairwise.venn(area1=609, cross.area=609, area2=10087,
+                   category = c('Mixed_Model', 'Simple_model'),
+                   fill = c("Red", "Yellow"),)
+```
+
+
+## Compare Proteomics data per disease group
+```{r}
+
+analyze_ranks <- function(disease, df_RLM, df_MM){
+  
+  ## RLM results
+  df_RLM <- df_RLM[df_RLM$outcome == disease,]
+  
+  ## MixedModel results
+  df_MM <- df_MM[df_MM$outcome == disease,]
+  
+  ## Determine ranks (again)
+  df_RLM$rank <- rank(df_RLM$p.value)
+  df_MM$rank <- rank(df_MM$p.value)
+  
+  ## Plot ranks
+  data_combined <- data.frame(df_RLM$rank, df_RLM$p.adj, df_MM$rank, df_MM$p.adj)
+  rownames(data_combined) <- df_RLM$feature
+  
+  return(data_combined)
+  
+}
+
+RLM_prot <- RLM_noCov[RLM_noCov$assay == 'Proteomics',]
+Proteomics_CHD2 <- analyze_ranks('phenotypeDiseased: CHD2', RLM_prot, MixedModel_prot)
+Proteomics_NANS <- analyze_ranks('phenotypeDiseased: NANS-CDG', RLM_prot, MixedModel_prot)
+Proteomics_DM1 <- analyze_ranks('phenotypeDiseased: DM1', RLM_prot, MixedModel_prot)
+
+
+RLM_mtblmcs_tml <- RLM_noCov[RLM_noCov$assay == 'Metabolomics, TML',]
+MetabolomicsTML_CHD2 <- analyze_ranks('phenotypeDiseased: CHD2', RLM_mtblmcs_tml, MixedModel_mtblmcs_tml)
+MetabolomicsTML_NANS <- analyze_ranks('phenotypeDiseased: NANS-CDG', RLM_mtblmcs_tml, MixedModel_mtblmcs_tml)
+MetabolomicsTML_DM1 <- analyze_ranks('phenotypeDiseased: DM1', RLM_mtblmcs_tml, MixedModel_mtblmcs_tml)
+```
+
+
+```{r}
+library(ggplot2)
+
+plot_ranks <- function(data_combined, color_dots= "blue") {
+  
+  cutoff_rank_RLM <- sum(data_combined$df_RLM.p.adj <= 0.05)
+  cutoff_rank_MixedModel <- sum(data_combined$df_MM.p.adj <= 0.05)
+  
+  title <- deparse(substitute(data_combined))
+  omics <- strsplit(title, split = '_')[[1]][[1]]
+  disease <- strsplit(title, split = '_')[[1]][[2]]
+  
+  ggp <- ggplot(data_combined, aes(x = df_RLM.rank, y = df_MM.rank)) +
+    geom_point(color = color_dots, alpha =0.7) +
+    geom_hline(yintercept = cutoff_rank_MixedModel, color = "black", linetype = 'dashed') +
+    geom_vline(xintercept = cutoff_rank_RLM, color = "black", linetype = 'dashed') +
+    labs(
+      title = paste0("Compare ", omics, " feature ranks based on p-values\nDisease: ", disease),
+      x = 'Robust linear model ranks',
+      y = 'Mixed Model ranks'
+    ) +
+    theme_bw()
+  return(ggp)
+  
+}
+
+plot_ranks(Proteomics_CHD2)
+plot_ranks(Proteomics_NANS, "red")
+plot_ranks(Proteomics_DM1, "darkgreen")
+
+plot_ranks(MetabolomicsTML_CHD2)
+plot_ranks(MetabolomicsTML_NANS, "red")
+plot_ranks(MetabolomicsTML_DM1, "darkgreen")
+```
+
+```{r}
+plot_ranks(Proteomics_CHD2)
+```
+
+
+## Functions to plot interesting features 
+```{r}
+library(ggplot2)
+library(ggrepel)
+library(ggokabeito) # Okabe-Ito
+library(ggpubr)
+
+
+## Function to prepare data frame for boxlots of top 10 features
+prepare_boxplots <- function(assay_name) {
+  
+  se <- experiments(mae)[assay_name]
+  df <- as.data.frame(t(assays(se)[[1]]))
+  df <- cbind(df, pheno_df[rownames(df),])
+  return(df)
+}
+
+
+## Function to make boxplot of top associated -omics feature
+boxplot_top_feature <- function(df_input, feature, assay_name) {
+  #print(feature)
+  df2plot <- df_input[, c(feature, 'phenotype')]
+  colnames(df2plot) <- c("y_feature", 'group')
+  
+  ggp <- ggplot(df2plot, 
+             aes(x = group, y = y_feature, fill = group)) +
+        geom_boxplot(position = position_dodge(width = 0.9))  +
+        scale_fill_okabe_ito() + 
+        stat_compare_means() +
+        ggtitle(stringr::str_wrap(paste0(
+          feature, "\t", assay_name), 
+          width = 60)) +
+        theme_bw() +
+        theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1))
+  ggsave(file.path(outdir, paste0("MixedModel_top_hit_boxplot_all_groups", feature, ".png")), ggp,
+      width = 25.04, height = 17.46, units = "cm", dpi = 300)
+  return(ggp)
+}
+```
+
+
+## Read data and metadata: MultiAssayExperiment
+```{r}
+require(SummarizedExperiment)
+suppressWarnings(library(MultiAssayExperiment)) 
+
+
+mae <- loadHDF5MultiAssayExperiment(
+  dir = params$mae_hdf5_path, 
+  prefix = 'mae')
+
+
+pheno_df <- as.data.frame(colData(mae))
+
+experiment_names <- names(experiments(mae))
+assay_names <- experiment_names[c(1,2,3,9,10,11)]
+```
+
+
+### Which features are significant in RLMs, but the least in Mixed Models?
+```{r}
+highest_difference_df <- Proteomics_NANS[Proteomics_NANS$df_RLM.rank <= 30,]
+features_diff <- rownames(highest_difference_df[highest_difference_df$df_MM.rank >300,])
+```
+
+
+## Plot interesting features
+```{r}
+assay_name <- "Proteomics"
+df <- prepare_boxplots(assay_name)
+lapply(features_diff, function(x) boxplot_top_feature(df, x, assay_name))
+```
+
+
+## Session information
+```{r}
+sessionInfo()
+```

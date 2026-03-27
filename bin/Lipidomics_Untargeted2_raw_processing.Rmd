@@ -1,0 +1,324 @@
+---
+title: "Lipidomics Untargeted with Unknown lipids"
+output: html_document
+params:
+  lipidomics_data_pos_unfiltered: Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/New information requested/Untargeted met+lip/20231123_134746_lipidomics_pos_CURATED.txt
+  lipidomics_data_neg_unfiltered: Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/New information requested/Untargeted met+lip/20231123_135559_lipidomics_neg_CURATED.txt
+  metadata: 'Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/New information requested/Untargeted met+lip/KB_2023_029_ALain Gool_IPSC cells_sample list lipid.xlsx'
+  bca_results: "Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/New information requested/Untargeted met+lip/KB_2023_029_Alain Gool_IPSC cells_BCA results.xlsx"
+  sample_matching: "Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Sample list.xlsx"
+ 
+  outdir: Z:/data/iPSC_data/iPSC_MAE
+---
+
+# Read un-processed lipidomics (untargeted) data and filter for RSD and blank-sample ratio
+
+##
+```{r}
+library(here)
+library(sessioninfo)
+library(openxlsx)
+library(tidyr)
+library(RColorBrewer)
+library(grid)
+library(ggplot2)
+```
+
+#### Script parameters
+```{r}
+print(Sys.Date())
+print(params)
+```
+
+### Function for scaling rows
+```{r}
+scale_rows <- function(x){
+  m <- apply(x, 1, mean, na.rm = TRUE)
+  s <- apply(x, 1, stats::sd, na.rm = TRUE)
+  
+  return((x - m) / s)
+}
+```
+
+
+### Read files
+```{r}
+lip_pos <- read.csv(params$lipidomics_data_pos_unfiltered, sep = '\t')
+lip_neg <- read.csv(params$lipidomics_data_neg_unfiltered, sep = '\t')
+
+# Add my_id column
+lip_pos$my_id <- paste0('pos_', lip_pos$X)
+lip_neg$my_id <- paste0('neg_', lip_neg$X)
+
+## Feature metadata
+feature_metadata_pos <- lip_pos[4:2358,c(1:35, 101)]
+feature_metadata_neg <- lip_neg[4:701,c(1:35, 101)]
+feature_metadata <- rbind(feature_metadata_neg, feature_metadata_pos)
+rownames(feature_metadata) <- feature_metadata$my_id
+# Change column names
+colnames(feature_metadata) <- feature_metadata[1,]
+feature_metadata <- feature_metadata[2:3053,]
+names(feature_metadata)[names(feature_metadata) == "neg_Alignment ID"] <- 'my_id'
+
+# Select only measurement data
+lip_pos <- lip_pos[4:2358,36:101]
+lip_neg <- lip_neg[4:701,36:101]
+
+
+# Merge pos and neg
+all_data <- rbind(lip_neg,lip_pos)
+
+# Change column names
+colnames(all_data) <- all_data[1,]
+all_data <- all_data[2:3053,]
+names(all_data)[names(all_data) == "neg_Alignment ID"] <- 'my_id'
+```
+
+### Read metadata
+```{r}
+# extract meta data
+meta_data <- read.xlsx(xlsxFile = params$metadata,
+                       sheet = "Sheet4")
+```
+
+
+### Transform the data in long format.
+```{r}
+# extract just data
+all_data_long <- all_data |> 
+  pivot_longer(cols = -c(my_id),
+               names_to = "sampleId",
+               values_to = "peakArea")
+#all_data_long$LipidClass <- as.factor(all_data_long$LipidClass)
+all_data_long$peakArea <- as.numeric(all_data_long$peakArea)
+
+```
+
+## BCA Results
+```{r}
+bca1 <- read.xlsx(xlsxFile = params$bca_results, 
+                  sheet = 2, 
+                  cols = 1:6, 
+                  rows = 23:41)
+
+
+bca2 <- read.xlsx(xlsxFile = params$bca_results,
+                  sheet = 3,
+                  cols = 1:6,
+                  rows = 23:41)
+
+bca <- rbind.data.frame(bca1, bca2)
+colnames(bca) <- c("kevinNr", "absAvg1", "absAvg2", "conc1", "conc2", "avgProteinContent")
+```
+
+
+### Merge with metadata
+```{r}
+meta_data <- merge(
+  x = meta_data,
+  y = bca[, c("kevinNr", "avgProteinContent")],
+  by.x = "kevinNr",
+  by.y = "kevinNr",
+  all.x = TRUE
+)
+```
+
+```{r}
+all_data_long <- merge(
+  x = all_data_long,
+  y = meta_data,
+  by.x = "sampleId",
+  by.y = "SampleName",
+  all.x = TRUE
+)
+
+all_data_long$SampleID <- NULL
+```
+
+```{r}
+all_data_long$polarity <- as.factor(
+  gsub(x = all_data_long$my_id,
+       pattern = "(pos|neg).*",
+       replacement = "\\1")
+)
+```
+
+## QC
+
+```{r}
+# get qc  data
+qc_data <- all_data_long[all_data_long$SampleType == "qcpool", ]
+# get reference data
+ref_data <- qc_data[qc_data$sampleId == "Qcpool_006", ]
+```
+
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+```
+
+
+```{r}
+# calculate the RSD's
+rsd_data <- data.frame(rsd = tapply(qc_data, qc_data$my_id, function(x) {
+  sd(x$peakArea, na.rm = TRUE) / mean(x$peakArea, na.rm = TRUE)
+}))
+rsd_data$my_id <- rownames(rsd_data)
+rsd_data$polarity <- as.factor(
+  gsub(x = rsd_data$my_id,
+       pattern = "(pos|neg).*",
+       replacement = "\\1")
+)
+
+rsd_data |> 
+  ggplot(aes(x = rsd,
+             fill = polarity)) +
+  geom_histogram(binwidth = 0.005,
+                 alpha = 0.5) +
+  labs(x = "Relative standard deviation") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+## Remove features with RSD higher than 0.3
+```{r}
+rsd_data_highRSD <- rsd_data[rsd_data$rsd > 0.3,]
+lipids_remove <- unique(rsd_data_highRSD$my_id) 
+
+all_data_long <- all_data_long[!all_data_long$my_id %in% lipids_remove,]
+```
+
+```{r}
+# get qc  data
+qc_data <- all_data_long[all_data_long$SampleType == "qcpool", ]
+# get reference data
+ref_data <- qc_data[qc_data$sampleId == "Qcpool_006", ]
+```
+
+
+```{r}
+# calculate the RSD's
+rsd_data <- data.frame(rsd = tapply(qc_data, qc_data$my_id, function(x) {
+  sd(x$peakArea, na.rm = TRUE) / mean(x$peakArea, na.rm = TRUE)
+}))
+rsd_data$my_id <- rownames(rsd_data)
+rsd_data$polarity <- as.factor(
+  gsub(x = rsd_data$my_id,
+       pattern = "(pos|neg).*",
+       replacement = "\\1")
+)
+
+rsd_data |> 
+  ggplot(aes(x = rsd,
+             fill = polarity)) +
+  geom_histogram(binwidth = 0.005,
+                 alpha = 0.5) +
+  labs(x = "Relative standard deviation") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
+## Normalization
+
+### Total are norm.
+```{r}
+all_data_long_totnorm <- all_data_long
+all_data_long_totnorm <- all_data_long_totnorm[all_data_long_totnorm$SampleType == "sample", ]
+#all_data_long_totnorm <- all_data_long_totnorm[!apply(all_data_long_totnorm, 1, function(row) all(is.na(row))),] 
+tot_sum_data <- tapply(all_data_long_totnorm$peakArea, all_data_long_totnorm$sampleId, sum, simplify = FALSE, na.rm=TRUE)
+tot_sum_data <- as.data.frame(do.call("rbind", tot_sum_data))
+colnames(tot_sum_data)[1] <- "totalPeakArea"
+tot_sum_data$sampleId <- rownames(tot_sum_data)
+
+all_data_long_totnorm <- merge(
+  x = all_data_long_totnorm,
+  y = tot_sum_data,
+  by = "sampleId"
+)
+
+all_data_long_totnorm$peakAreaNorm <- all_data_long_totnorm$peakArea / all_data_long_totnorm$totalPeakArea
+```
+
+### Protein content norm.
+```{r}
+all_data_long_norm <- all_data_long
+all_data_long_norm$peakAreaNorm <- all_data_long_norm$peakArea / all_data_long_norm$avgProteinContent
+# all_data_long_norm <- all_data_long_norm[!(all_data_long_norm$kevinNr %in% c(9)), ]
+```
+
+
+## Prepare for export
+```{r}
+library(tidyverse)
+# Transpose the meta data for export
+t_meta <- meta_data |> 
+  # remove blanks
+  filter(SampleType != "blank") |> 
+  # select the columns
+  select(SampleName, SampleType, Group, InjOrder) |> 
+  # sort by filename
+  arrange(SampleName) |> 
+  # everything needs to be character in order to transpose
+  mutate(across(everything(), as.character)) |> 
+  pivot_longer(-SampleName) |> 
+  pivot_wider(names_from = SampleName,
+              values_from = value) |> 
+  mutate(LipidClass = NA,
+         ShortLipidName = NA,
+         LongLipidName = NA) |> 
+  relocate(LipidClass, ShortLipidName, LongLipidName, .after = "name") |> 
+  rename(LipidID = name)
+```
+
+```{r}
+export_raw <- all_data_long |> 
+  filter(SampleType != "blank") |> 
+  pivot_wider(id_cols = c(my_id),
+              names_from = sampleId,
+              values_from = peakArea) |> 
+  rename(LipidID = my_id) 
+
+
+export_totnorm <- all_data_long_totnorm |>
+  filter(SampleType == "sample") |>
+  pivot_wider(id_cols = c(my_id),
+              names_from = sampleId,
+              values_from = peakAreaNorm) |> 
+  rename(LipidID = my_id) 
+
+export_norm <- all_data_long_norm |>
+  filter(SampleType == "sample") |>
+  pivot_wider(id_cols = c(my_id),
+              names_from = sampleId,
+              values_from = peakAreaNorm) |> 
+  rename(LipidID = my_id) 
+```
+
+
+
+## Save data and metadata to .CSV files
+```{r}
+wb <- createWorkbook()
+addWorksheet(wb, "Raw")
+writeData(wb, "Raw", export_raw)
+
+addWorksheet(wb, "Total area normalized")
+writeData(wb, "Total area normalized", export_totnorm)
+
+addWorksheet(wb, "Protein content normalized")
+writeData(wb, "Protein content normalized", export_norm)
+
+addWorksheet(wb, "Feature metadata")
+writeData(wb, "Feature metadata", feature_metadata)
+
+saveWorkbook(wb, file =  "Z:/data/iPSC_data/iPSC_metabolomics_lipidomics_LUMC/Lipidomics_results_unfiltered.xlsx", overwrite = T)
+```
+
+
+```{r}
+sessionInfo()   
+```
+
+
