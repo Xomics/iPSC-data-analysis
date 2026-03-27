@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # iPSC Data Analysis
 
 ## Description
@@ -161,7 +160,3 @@ nextflow run main.nf
 	--meth_dir /mnt/data/data/iPSC_data/Meth_NF_files/
 	--alt_omics_dir /mnt/data/data/iPSC_data/iPSC_MAE/
 ```
-
-## Licenses
-
->>>>>>> 10b2857eac83a420e0723015000057fafaa163fb
