@@ -92,3 +92,6 @@ nextflow run main.nf \
 ## Data files on Zenodo
 To run the Nextflow pipeline, input files can be downloaded on Zenodo:
 [Link_to_Zenodo](https://doi.org/10.5281/zenodo.19129856)
+
+## Licenses
+
