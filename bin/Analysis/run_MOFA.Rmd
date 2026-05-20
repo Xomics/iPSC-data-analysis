@@ -228,20 +228,16 @@ reticulate::use_python("/usr/bin/python3", required = T)
 Train the MOFA model
 
 ```{r run_mofa, message=FALSE}
-#outdir <- params$outdir
-#outfile = file.path(outdur_disease, "model_ALL_SAMPLES_Annotated_Data.hdf5")
-#outfile = file.path(outdir, "model_ALL_SAMPLES.hdf5")
-#outfile = file.path(outdir, "model_ALL_SAMPLES_Prot_Glob_Min.hdf5")
-#MOFAobject.trained <- run_mofa(MOFAobject, outfile)
+outdir <- params$outdir
+outfile = file.path(outdir, "model_ALL_SAMPLES.hdf5")
+MOFAobject.trained <- run_mofa(MOFAobject, outfile)
 ```
 
 
 ## Read in MOFA model
 ```{r}
-#outfile = file.path(outdir, "model_ALL_SAMPLES.hdf5")
-#outfile = file.path(outdir, "model_ALL_SAMPLES_TotalAreaLipidTar.hdf5")
-outfile = file.path(outdir, "model_ALL_SAMPLES_Prot_Glob_Min.hdf5")
-MOFAobject.trained <- MOFA2::load_model(outfile)
+#outfile = file.path(outdir, "model_ALL_SAMPLES_Prot_Glob_Min.hdf5")
+#MOFAobject.trained <- MOFA2::load_model(outfile)
 ```
 
 

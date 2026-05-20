@@ -19,7 +19,6 @@ process RUN_MOFA {
     path neuron_markers
     
     output:
-    path '*.hdf5'
     path 'SampleScores.csv'
 
     """
